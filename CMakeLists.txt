@@ -1,28 +1,59 @@
 cmake_minimum_required(VERSION 3.20)
+project(ase-types VERSION 0.1.0 LANGUAGES CXX)
 
-project(ase-types
-    VERSION 0.1.0
-    DESCRIPTION "ASE Types Library - Result, Option"
-    LANGUAGES CXX
-)
+#[[
+ASE FOUNDATION BUILD CONFIGURATION
 
-# Header-only library
-add_library(ase-types INTERFACE)
-add_library(ase::types ALIAS ase-types)
+@file        CMakeLists.txt
+@brief       Build configuration for ase-types
+@description Types library - Result, Option, error handling primitives.
+             Header-only library for type-safe error handling.
 
-target_include_directories(ase-types
+@module      ase-types
+@layer       0 (Foundation)
+@created     2025-01-01
+@modified    2025-01-30
+@version     1.0.0
+
+CMAKE MODULE COMPLIANCE
+
+[ ] cmake_minimum_required(VERSION 3.20) as FIRST line
+[ ] project() with VERSION and LANGUAGES CXX
+[ ] message(STATUS) for configuration output
+[ ] add_library() with INTERFACE for header-only
+[ ] add_library(ase::{module} ALIAS ...) for namespace
+[ ] target_include_directories() with INTERFACE and generator expressions
+[ ] target_compile_features() with cxx_std_20
+[ ] NO external dependencies (Layer 0)
+[ ] include(GNUInstallDirs) for installation
+[ ] install(DIRECTORY include/ ...) for headers
+]]
+
+message(STATUS "Configuring ${PROJECT_NAME} v${PROJECT_VERSION}")
+
+#[[
+HEADER-ONLY LIBRARY
+Type primitives: Result<T,E>, Option<T>, error codes.
+]]
+add_library(${PROJECT_NAME} INTERFACE)
+add_library(ase::types ALIAS ${PROJECT_NAME})
+
+target_include_directories(${PROJECT_NAME}
     INTERFACE
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
 )
 
-target_compile_features(ase-types INTERFACE cxx_std_20)
+target_compile_features(${PROJECT_NAME} INTERFACE cxx_std_20)
 
-# Install
-install(TARGETS ase-types
-    EXPORT ase-types-targets
+#[[ VERBOTEN: No dependencies allowed in Layer 0! ]]
+
+include(GNUInstallDirs)
+
+install(TARGETS ${PROJECT_NAME}
+    EXPORT ${PROJECT_NAME}-targets
 )
 
-install(DIRECTORY include/ase
-    DESTINATION include
+install(DIRECTORY include/
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
 )
