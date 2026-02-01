@@ -46,6 +46,13 @@ endif()
 
 project(ase-types VERSION ${ASE_TYPES_VERSION} LANGUAGES CXX)
 
+# Generate version.hpp from template (SSOT)
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/include/ase/types/version.hpp.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/include/ase/types/version.hpp"
+    @ONLY
+)
+
 # ==============================================================================
 # BUILD CONFIGURATION
 # ==============================================================================
