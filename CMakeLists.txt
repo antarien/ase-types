@@ -65,7 +65,25 @@ message(STATUS "Configuring ${PROJECT_NAME} v${PROJECT_VERSION}")
 HEADER-ONLY LIBRARY
 Type primitives: Result<T,E>, Option<T>, error codes.
 ]]
-add_library(${PROJECT_NAME} INTERFACE)
+add_library(${PROJECT_NAME} INTERFACE
+    #[[
+    CORE
+    Main types header and entry point.
+    ]]
+    include/ase/types/types.hpp
+
+    #[[
+    RESULT
+    Result<T,E> type for error handling without exceptions.
+    ]]
+    include/ase/types/result.hpp
+
+    #[[
+    OPTION
+    Option<T> type for optional values without std::optional.
+    ]]
+    include/ase/types/option.hpp
+)
 add_library(ase::types ALIAS ${PROJECT_NAME})
 
 target_include_directories(${PROJECT_NAME}
