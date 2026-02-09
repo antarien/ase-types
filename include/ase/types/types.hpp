@@ -130,7 +130,7 @@ constexpr bool is_in_rng_i32(int32_t v, int32_t min, int32_t max) { return v >= 
 
 /**
  * ABBREVIATIONS (Documentation)
- * See: WRFL_ASE_NAMING_SCHEMA.md and data/taxonomy/*.json
+ * See: WRFL_ASE_NAMING_SCHEMA.md and data/taxonomy/ (all .json files)
  *
  * │ Full Word │ Abbr │ Example                    │
  * │───────────│──────│────────────────────────────│
