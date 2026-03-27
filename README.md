@@ -10,7 +10,7 @@ Part of [ASE - Antares Simulation Engine](../../..)
 
 ## Overview
 
-`ase-types` provides Rust-style `Option<T>` and `Result<T, E>` types for expressive, type-safe error handling without exceptions. These types enforce explicit handling of nullable values and error cases at compile-time, reducing bugs and improving code clarity.
+`ase-types` provides Rust-style `Option<T>` and `Result<T, E>` types for expressive, type-safe error handling without exceptions, replacing the C++ patterns of returning sentinel values or throwing exceptions that ECS systems cannot safely use. Option<T> replaces std::optional (which is forbidden in ECS components) with a type that enforces explicit null checks at compile time — accessing an empty Option without checking is_some() is a compile error, not a runtime crash. Result<T, E> replaces exception-based error handling with explicit success/failure returns that calling code must handle, making error paths visible in the type signature rather than hidden in try-catch blocks. These types are used across the entire engine: database queries return Result, configuration lookups return Option, and system calculations that might fail return Result with typed error codes. The module also defines the InvalidEntityId constant (UINT32_MAX) used in all components for entity references, and common type aliases used in component definitions. As a Layer 0 foundation library, ase-types has no ASE dependencies and is imported by every module that defines components.
 
 ## Features
 
