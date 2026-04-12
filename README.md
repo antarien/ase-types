@@ -24,7 +24,7 @@ Part of [ASE - Antares Simulation Engine](../../..)
 
 ```cmake
 # Add to your CMakeLists.txt
-add_subdirectory(core/foundation/ase-types)
+add_subdirectory(foundation/ase-types)
 target_link_libraries(your_target PRIVATE ase-types)
 ```
 
