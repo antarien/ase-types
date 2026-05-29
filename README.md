@@ -198,7 +198,7 @@ auto content = read_file("config.json")
         }
     })
     .map<int>([](const nlohmann::json& j) { return j["port"].get<int>(); })
-    .unwrap_or(8080);  // Default port
+    .unwrap_or(8090);  // Default port
 ```
 
 ## API Reference
