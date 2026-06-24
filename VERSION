@@ -39,10 +39,12 @@
 #   stable = Production ready (set manually)
 #
 # ==============================================================================
-ASE_TYPES=00.00.18.00018
+
+ASE_TYPES=00.00.19.00019
 ASE_TYPES_NAME=Type Definitions
 ASE_TYPES_DESC=Result, Option, type aliases, InvalidEntityId
 ASE_TYPES_LAYER=0
 ASE_TYPES_STATUS=init
 ASE_TYPES_CREATED=2025-12-15
-ASE_TYPES_UPDATED=2026-05-29
+ASE_TYPES_UPDATED=2026-06-03
+
