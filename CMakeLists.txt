@@ -83,6 +83,14 @@ add_library(${PROJECT_NAME} INTERFACE
     Option<T> type for optional values without std::optional.
     ]]
     include/ase/types/option.hpp
+
+    #[[
+    MESH WIRE
+    Frozen World-Mesh wire contract: BIN_MSG band 92-106, RegionRect + chunk_in_region,
+    ChunkSnapEntry/PlayerSnap/EntitySnap byte layouts, mesh intent PODs. Shared by all
+    four tiers so no module restates a frame id (PLAN_ASE_COMPUTE_PHASE_00_CONTRACT WS-0.1).
+    ]]
+    include/ase/types/region_wire.hpp
 )
 add_library(ase::types ALIAS ${PROJECT_NAME})
 
