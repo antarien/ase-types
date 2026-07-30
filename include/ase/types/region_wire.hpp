@@ -93,6 +93,31 @@ constexpr uint32_t LEADER_CLAIM_FRAME_SZ      = 13u;  // [105](1) + engine_id:u3
 constexpr uint32_t LEADER_CLAIM_OFF_ENGINE    = 1u;   // u32 offset of the claiming Engine's id
 constexpr uint32_t LEADER_CLAIM_OFF_EPOCH_MS  = 5u;   // u64 offset of the claim's unix-epoch millisecond stamp
 
+// Frame-121 layout (id lives OUTSIDE the 92-106 mesh band: the band is full and 104 stays
+// deliberately unassigned; 121 is the PROTOCOL note-chain's next free id, registered 2026-07-30).
+// [121][node_id:u32][port:u32][proj_hash:u32][spawn_wall_s:u32][state:u8] - the capacity
+// orchestrator's per-node inventory row (CapacityOrchStaNodeComponent + state-tag ladder).
+// The Engine re-sends EVERY ledger row each Maintenance pass; the Replica folds them as
+// idempotent upserts, so a Replica restart re-seeds from the next pass without extra logic.
+// The state byte is wire ENCODING only - both ECS ends carry the state as Tags (one tag per
+// value, monotonic ladder pending → spawning → healthy → [hung] → dead), never a
+// dispatched field. proj_hash is owner ATTRIBUTION (a field), never the delivery criterion.
+constexpr uint8_t  BIN_MSG_CAP_NODE_STATUS    = 121u; // Engine → Replica: one capacity-node inventory row
+constexpr uint32_t NODE_STATUS_FRAME_SZ       = 18u;  // [121](1) + 4x u32(16) + state:u8(1)
+constexpr uint32_t NODE_STATUS_OFF_NODE       = 1u;   // u32 offset of the logical node id
+constexpr uint32_t NODE_STATUS_OFF_PORT       = 5u;   // u32 offset of the listen port (= systemd instance id)
+constexpr uint32_t NODE_STATUS_OFF_PROJ       = 9u;   // u32 offset of the seeding project's FNV-1a32 hash
+constexpr uint32_t NODE_STATUS_OFF_SPAWN      = 13u;  // u32 offset of the unit-start wall second
+constexpr uint32_t NODE_STATUS_OFF_STATE      = 17u;  // u8 offset of the CAP_NODE_STATE_* ladder code
+// State ladder codes carried by the state byte. 0 is INVALID (a zeroed frame never reads as a
+// legitimate state); the ladder is monotonic, which is what lets the browser store read the
+// current rung by precedence even though its tag merge never removes an earlier rung's tag.
+constexpr uint8_t CAP_NODE_STATE_PND  = 1u;  // pending: port reserved, unit not started
+constexpr uint8_t CAP_NODE_STATE_SPWN = 2u;  // spawning: unit started, telemetry not yet seen
+constexpr uint8_t CAP_NODE_STATE_HLTH = 3u;  // healthy: telemetry heartbeat armed and moving
+constexpr uint8_t CAP_NODE_STATE_HANG = 4u;  // hang: silent past timeout while systemd calls the unit active (dead-by-hang)
+constexpr uint8_t CAP_NODE_STATE_DEAD = 5u;  // dead: reaped or hung-restarted; the row is the audit trace
+
 // 104 is DELIBERATELY UNASSIGNED. It was planned as a "Replica → browser terrain summary" frame,
 // which contradicts the channel SSOT (WRFL_ASE_CHANNEL_ARCHITECTURE, ARCH_ASE_CODEGEN_NET): a browser
 // receives exactly two things - hub_values/hub_almanach (scalars) and the codegen channels declared in
