@@ -128,6 +128,30 @@ constexpr uint8_t CAP_NODE_STATE_DEAD = 5u;  // dead: reaped or hung-restarted; 
 // Client region-subscribe is a JSON message on the browser reliable lane and deliberately has NO
 // BIN_MSG id - it never crosses the server-to-server binary lane.
 
+// Frame-122 layout (id continues the PROTOCOL note-chain after 121; the 92-106 mesh band is full
+// and 104 stays deliberately unassigned). CONTRACT AMENDMENT 2026-07-31 (operator task #39,
+// PLAN_ASE_LATTICE_PHASE_06_INTEG WS-I.1 link 9): the lattice cell-state seam had no wire leg -
+// the only emplace<ReplicaStaCellComponent> was the Neo4j boot rehydrator reading back the very
+// mirror that feeds the graph writer, so the circle had no entrance. This frame IS that entrance:
+// [122][region_id:u32][cx:i32][cz:i32][state:u32][gate_mask:u32][sect_id:u32] - ONE persistent-
+// zone cell row, World → Replica, staged by the gis zone egress on Dissemination and folded by
+// the Replica as an idempotent upsert into the (proj_hash,cx,cz) cell mirror (proj_hash resolved
+// via the region row join, behind the same conn + region + rect gates as TERRAIN_DELTA(106)).
+// The state code below is wire ENCODING only: the Replica translates CELL_STATE_ZONE into its
+// module-local TPLG_CELL_STATE_ZONE at the decode seam, so the two ladders cannot drift silently.
+// A promotion row always carries CELL_SECT_NONE - at promotion time no sector has adopted the
+// cell yet (sector aggregation happens strictly after the zone ascent, DSGN_019 Z.132).
+constexpr uint8_t  BIN_MSG_GIS_CELL_ZONE = 122u; // World → Replica: one persistent-zone lattice cell row
+constexpr uint32_t CELL_ZONE_FRAME_SZ    = 25u;  // [122](1) + region:u32(4) + cx:i32(4) + cz:i32(4) + state:u32(4) + gates:u32(4) + sect:u32(4)
+constexpr uint32_t CELL_ZONE_OFF_REGION  = 1u;   // u32 offset of the routing region id
+constexpr uint32_t CELL_ZONE_OFF_CX      = 5u;   // i32 offset of the cell chunk X
+constexpr uint32_t CELL_ZONE_OFF_CZ      = 9u;   // i32 offset of the cell chunk Z
+constexpr uint32_t CELL_ZONE_OFF_STATE   = 13u;  // u32 offset of the wire cell-state code
+constexpr uint32_t CELL_ZONE_OFF_GATES   = 17u;  // u32 offset of the gate bitmask (bit N = edge N)
+constexpr uint32_t CELL_ZONE_OFF_SECT    = 21u;  // u32 offset of the sector id (CELL_SECT_NONE = none)
+constexpr uint32_t CELL_STATE_ZONE       = 3u;   // wire code: persistent zone (Replica-side TPLG_CELL_STATE_ZONE)
+constexpr uint32_t CELL_SECT_NONE        = 0u;   // wire code: no sector assigned (Replica-side TPLG_SECT_NONE)
+
 // ---------------------------------------------------------------------------
 // Region identity + geometry
 // ---------------------------------------------------------------------------
@@ -302,6 +326,19 @@ struct CapacityReqRebalanceTag {};   // move the region to a less loaded node, g
 struct CapacityReqSpawnTag {};       // a new node is needed before the region can be assigned
 struct CapacityReqRelinquishTag {};  // the region is given up entirely (project teardown / merge tail)
 
+// CONTRACT AMENDMENT 2026-07-31 (PLAN_ASE_LATTICE_PHASE_04_CAP WS-C.1). A SIXTH intent class, added
+// under the same precedent as the five tags above. The Genesis rule creates the FIRST region of a
+// project and hands it to a World node that is ALREADY live - no node may be spawned for it. None of
+// the five classes above carries that meaning, measured at their drains: CapacityReqSplitTag turns
+// into a spawn whenever to_node is 0 (capacity_orch_req_splt_sys.cpp:291-292), CapacityReqSpawnTag
+// reserves a fresh port and node id unconditionally (capacity_orch_req_spwn_sys.cpp:306-336), and
+// CapacityReqRebalanceTag DROPS an intent whose to_node is 0 (capacity_orch_req_blnc_sys.cpp). The
+// scheduler never names a node - "to_node stays zero on purpose", capacity_rcn_blnc_sys.cpp EMIT
+// PASS - so reusing any of them would spawn a second node while the node the FLOOR rule just
+// provided sits idle. Frame 93 stays untouched (versionless, one-rect): this is an empty Tag, not a
+// wire change; the class it selects is drained onto the EXISTING assign path.
+struct CapacityReqAssignTag {};      // give an already-created region to an already-live node (no spawn)
+
 // CONTRACT AMENDMENT 2026-07-28 (PLAN_ASE_COMPUTE_PHASE_02_ORCH WS-D.2). Two more shared PODs,
 // added under the same precedent as CapacityReqXmitComponent above: ase-capacity (L3) and
 // ase-pl-capacity-orch (L4) both touch them, and the ONLY legal shared home is this L0 header
@@ -332,6 +369,34 @@ struct CapacityReqSpwnComponent {
 struct CapacityNodePendComponent {
     uint32_t node_id = 0;    // Engine-side logical node handle of the in-flight spawn
     uint32_t proj_hash = 0;  // project the pending node was spawned for
+};
+
+/**
+ * CapacityNodeAdopComponent - one durable node row delivered to the orchestrator for adoption.
+ *
+ * The third POD of the same amendment, and it closes the loop the other two opened. The
+ * orchestrator's ledger is RAM-only, so every Engine restart forgets the compute nodes it started
+ * - they keep running, unreachable and unaccounted (TASK_ASE_TOPOLOGY_BACKLOG #115). WS-D.2 routes
+ * the durable copy back through the Replica ("the Engine holds no Mongo handle; the Replica reads
+ * capacity_nodes from Mongo and re-publishes the node/port table owner-scoped over the filtered
+ * bridge"), and the hub bridge lands in ase-capacity (L3) - the scheduler side, which may read the
+ * hub. The plugin (L4) may not include it, so the delivered row crosses HERE, exactly like the
+ * spawn request above.
+ *
+ * Carries the project_id STRING for the same reason CapacityReqSpwnComponent does: proj_hash is a
+ * one-way FNV32, and a node reaped later re-queues its regions as spawn intents that need the
+ * string. The scheduler resolves it once, at delivery, through the O(1) project-row address seam
+ * (ENG_PROJ_ROW_HI/LO) - never by walking the project rows.
+ *
+ * The row is a REQUEST, not a claim of liveness: it states that a node with this identity was
+ * durable, and the plugin's adopt pass is what confirms or drops it with systemctl is-active.
+ */
+struct CapacityNodeAdopComponent {
+    char project_id[NODE_TOKEN_PROJ_ID_SZ] = {};  // NUL-padded project id string (empty = unresolved)
+    uint32_t node_id = 0;                         // logical node handle (the durable identity)
+    uint32_t port = 0;                            // listen port = systemd instance id to verify
+    uint32_t proj_hash = 0;                       // project the node was spawned for
+    uint32_t spawn_wall_s = 0;                    // unit-start wall second (0 = unknown)
 };
 
 }  // namespace ase::types

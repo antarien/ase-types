@@ -91,6 +91,15 @@ add_library(${PROJECT_NAME} INTERFACE
     four tiers so no module restates a frame id (PLAN_ASE_COMPUTE_PHASE_00_CONTRACT WS-0.1).
     ]]
     include/ase/types/region_wire.hpp
+
+    #[[
+    HEXGRID WIRE
+    Frozen planet hex-lattice seam: the ONE chunk-id packing (chunk_coords_to_id /
+    cell_to_chunk_id at CELL_CHUNK_Y), the int32-through-f32 hub bit-pattern codec, and the
+    cell-interaction / project-spawn intent PODs. Shared by World, Replica and Engine so no
+    module restates the packing (PLAN_ASE_LATTICE_PHASE_00_CONTRACT WS-K.2b, WS-K.4).
+    ]]
+    include/ase/types/hexgrid_wire.hpp
 )
 add_library(ase::types ALIAS ${PROJECT_NAME})
 
