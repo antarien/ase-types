@@ -81,6 +81,7 @@ constexpr uint32_t NODE_TOKEN_PROJ_ID_SZ = 16u;  // NUL-padded project id on fra
 constexpr uint32_t NODE_TOKEN_MAX        = 191u; // "<org>.<token_id>.<secret>" upper bound on 102
 constexpr uint8_t BIN_MSG_CAP_LEADER_CLAIM        = 105u; // Engine → Replica: capacity-scheduler HA lease claim (Mongo capacity_leader is authority)
 constexpr uint8_t BIN_MSG_TERRAIN_DELTA           = 106u; // World → Replica: changed CELLS only - the steady-state terrain feed
+constexpr uint8_t BIN_MSG_TERRAIN_PAGE_NACK       = 131u; // Replica → World: ONE chunk the receiver could not park - the back channel of the baseline lane, layout TRN_NACK_* below. Mirrored in ase-network types.hpp (value SSOT) and replica_types.hpp; registered in the PROTOCOL allocation table the same day (next free was 131)
 
 // Frame-105 layout. CONTRACT AMENDMENT 2026-07-29: the frozen plan fixes the claim as
 // [105][engine_id:u32][epoch_ms:u64] (PLAN_ASE_COMPUTE "Multi-Engine HA / leader election") and
@@ -152,12 +153,276 @@ constexpr uint32_t CELL_ZONE_OFF_SECT    = 21u;  // u32 offset of the sector id 
 constexpr uint32_t CELL_STATE_ZONE       = 3u;   // wire code: persistent zone (Replica-side TPLG_CELL_STATE_ZONE)
 constexpr uint32_t CELL_SECT_NONE        = 0u;   // wire code: no sector assigned (Replica-side TPLG_SECT_NONE)
 
+// Frames 123/124 - RESERVED for the WRLD_LIFE operative lane (audit G1 fix, registered 2026-08-03).
+// ase-pl-wrld-lifecycle had allocated 121/122 against a stale registry note ("highest live id is
+// 120") while 121 (CAP_NODE_STATUS) and 122 (GIS_CELL_ZONE) were already LIVE above - the same
+// collision took inbound lane 24, which is LANE_RGN carrying REGION_ASSIGN(93)/RELINQUISH(94), so
+// the plugin drain could destructively eat region assignments. The plugin's operative pair now
+// rides 123 (WRLD_LIFE_WIRE_MSG) / 124 (WRLD_LIFE_STATUS_RES_MSG) on lane 27; the value SSOT stays
+// plugin-local (ase-pl-wrld-lifecycle types.hpp) until the Replica per-node forward is built, per
+// the migration note there - THIS anchor only pins the ids so no later band reuses them.
+// The module axis (MODSET/HOFF_MODSET) therefore starts at 125 below.
+
+// ---------------------------------------------------------------------------
+// Module-group registry - the module axis of the dynamic server meshing.
+// CONTRACT AMENDMENT 2026-08-03 (PLAN_ASE_COMPUTE_MOD_AXIS.md T4, decision E4
+// option I-B): the ASSIGNMENT UNIT of the module axis is the causality GROUP,
+// never the single module - a per-module `if (module == ...)` dispatch is the
+// type-discriminator the ECS rules forbid, and the dense CAUSA clique
+// (INST_ASE_MOD_CAUSA.md Section 9: MTB→LFC→HRT→ENT chain, CMB↔SKL cycle, the
+// AI plane reads ALL) makes single-module separation exceed the sync budget
+// anyway. Groups are a FROZEN dense registry 0..63 so a set of groups rides a
+// single u64 `grp_mask` (wire-mask precedent: gate_mask u32 on frame 122
+// above, cred_avail_mask u32 on frame 78, collection_read_mask u16 on 85).
+// The stable member key is the module NAME string - T2 measured NO numeric
+// module identity anywhere (serial type_ids collide, codegen ids are strings,
+// no name hashes, load order unstable); the name is fourfold consistent
+// (module.toml, VERSION, AseModuleInfo.name, codegen.json). Membership changes
+// are contract amendments to THIS block, exactly like BIN_MSG id allocations.
+// Plan→real deviations, measured against modules/ (84 entries, 2026-08-03):
+// "ase-ai" is a CAUSA-doc role, not a module - the real AI plane is ase-bdi
+// plus the perception/signature/recognition clique; "ase-sky" is the L4
+// plugin ase-pl-sky, not an L3 module, so the ENVR members are the five real
+// environment modules. Unlisted modules resolve to MOD_GRP_ID_NONE and are
+// NOT maskable: they ride every node like the KERN plane until an amendment
+// assigns them - a silent default group would mis-attribute their load.
+// ---------------------------------------------------------------------------
+constexpr uint32_t MOD_GRP_KERN = 0u;  // infrastructure plane: loaded in EVERY tier build (T2: all four CMakes) - never assignable, registry slot 0 is the invariant
+constexpr uint32_t MOD_GRP_TERR = 1u;  // terrain plane: space-bound, region-local (the "terrain = own instance" cut, ARCH_ASE_REP_SRV.md:591)
+constexpr uint32_t MOD_GRP_ENTV = 2u;  // entity plane: the dense CAUSA clique - per-entity keys at tick rate, UNSEPARABLE inside, moves as a whole
+constexpr uint32_t MOD_GRP_ENVR = 3u;  // environment plane: low-frequency GLOBAL/zonal producers (TIM_*/CAL_*, 1 Hz class) - separable
+constexpr uint32_t MOD_GRP_COUNT = 4u;      // registered groups (dense, next amendment appends 4)
+constexpr uint32_t MOD_GRP_ID_NONE = 0xFFFFFFFFu;  // resolver sentinel: module not in the registry (not maskable, rides every node)
+
+constexpr uint64_t MOD_GRP_MASK_NONE = 0ull;   // empty group set
+constexpr uint64_t MOD_GRP_MASK_ALL  = ~0ull;  // full group set - the pre-module-axis default (a node without a MODSET row simulates everything)
+
+/** Bit of one group id inside a u64 grp_mask (dense registry 0..63). */
+constexpr uint64_t mod_grp_bit(uint32_t grp_id) {
+    return 1ull << grp_id;
+}
+
+// Member NAMES per group - the stable key (see block comment). KERN members are
+// listed for completeness of the registry even though the group is never
+// assignable; their presence on every node is what slot 0 encodes.
+constexpr const char* MOD_GRP_KERN_MEMBERS[] = {"ase-hub", "ase-sdk", "ase-monitoring"};
+constexpr const char* MOD_GRP_TERR_MEMBERS[] = {"ase-terrain", "ase-gis"};
+constexpr const char* MOD_GRP_ENTV_MEMBERS[] = {"ase-player", "ase-combat", "ase-metabolism",
+                                                "ase-lifecycle", "ase-heritage", "ase-entropy",
+                                                "ase-skill", "ase-perception", "ase-signature",
+                                                "ase-recognition", "ase-genetics", "ase-bdi"};
+constexpr const char* MOD_GRP_ENVR_MEMBERS[] = {"ase-time", "ase-calendar", "ase-celestial",
+                                                "ase-ephemeris", "ase-atmosphere"};
+constexpr uint32_t MOD_GRP_KERN_MEMBER_CNT = sizeof(MOD_GRP_KERN_MEMBERS) / sizeof(MOD_GRP_KERN_MEMBERS[0]);  // 3
+constexpr uint32_t MOD_GRP_TERR_MEMBER_CNT = sizeof(MOD_GRP_TERR_MEMBERS) / sizeof(MOD_GRP_TERR_MEMBERS[0]);  // 2
+constexpr uint32_t MOD_GRP_ENTV_MEMBER_CNT = sizeof(MOD_GRP_ENTV_MEMBERS) / sizeof(MOD_GRP_ENTV_MEMBERS[0]);  // 12
+constexpr uint32_t MOD_GRP_ENVR_MEMBER_CNT = sizeof(MOD_GRP_ENVR_MEMBERS) / sizeof(MOD_GRP_ENVR_MEMBERS[0]);  // 5
+
+// Per-group load key NAMES (transport X-A, PLAN_ASE_COMPUTE_MOD_AXIS.md T3): the load VECTOR of a
+// region is the set of its CAP_RGN_LOAD_<GRP> values under the UNCHANGED region_id owner - the
+// group rides in the value_id NAMESPACE, never in owner bits (PLAN_ASE_COMPUTE.md:246), and their
+// sum equals the aggregate CAP_RGN_LOAD, which stays live unchanged (no breaking change). Indexed
+// by group id; L0 stays EnTT-free, so the names live here as strings and every end hashes them
+// with entt::hashed_string at its own call site. Each key is registered in hub_metrics.json
+// BEFORE any hub::set AND allowlisted in bridge_value_allowed - registration alone does not cross
+// the bridge (measured trap, replica_hub_snd_sys.cpp).
+constexpr const char* MOD_GRP_LOAD_KEYS[MOD_GRP_COUNT] = {
+    "CAP_RGN_LOAD_KERN",  // MOD_GRP_KERN - measured for sum-consistency; never a split input (slot 0 invariant)
+    "CAP_RGN_LOAD_TERR",  // MOD_GRP_TERR
+    "CAP_RGN_LOAD_ENTV",  // MOD_GRP_ENTV
+    "CAP_RGN_LOAD_ENVR",  // MOD_GRP_ENVR
+};
+
+/** Exact string equality - L0 stays std::-free, so the two-pointer walk lives here. */
+constexpr bool mod_grp_name_eq(const char* a, const char* b) {
+    uint32_t i = 0u;
+    while (a[i] != '\0' && b[i] != '\0' && a[i] == b[i]) {
+        ++i;
+    }
+    return a[i] == b[i];
+}
+
+/**
+ * Resolve a module NAME to its group id - the registration-time System→Module
+ * →Group attribution seam (M-B rollup uses the SystemInfo source string).
+ * Returns MOD_GRP_ID_NONE for unregistered modules (see block comment).
+ */
+constexpr uint32_t mod_grp_of(const char* module_name) {
+    for (uint32_t i = 0u; i < MOD_GRP_KERN_MEMBER_CNT; ++i) {
+        if (mod_grp_name_eq(MOD_GRP_KERN_MEMBERS[i], module_name)) {
+            return MOD_GRP_KERN;
+        }
+    }
+    for (uint32_t i = 0u; i < MOD_GRP_TERR_MEMBER_CNT; ++i) {
+        if (mod_grp_name_eq(MOD_GRP_TERR_MEMBERS[i], module_name)) {
+            return MOD_GRP_TERR;
+        }
+    }
+    for (uint32_t i = 0u; i < MOD_GRP_ENTV_MEMBER_CNT; ++i) {
+        if (mod_grp_name_eq(MOD_GRP_ENTV_MEMBERS[i], module_name)) {
+            return MOD_GRP_ENTV;
+        }
+    }
+    for (uint32_t i = 0u; i < MOD_GRP_ENVR_MEMBER_CNT; ++i) {
+        if (mod_grp_name_eq(MOD_GRP_ENVR_MEMBERS[i], module_name)) {
+            return MOD_GRP_ENVR;
+        }
+    }
+    return MOD_GRP_ID_NONE;
+}
+
+// ---------------------------------------------------------------------------
+// Frames 125-128 - the module-axis MODSET band. CONTRACT AMENDMENT 2026-08-03
+// (PLAN_ASE_COMPUTE_MOD_AXIS.md T4; ids registered in the PROTOCOL note chain,
+// 123/124 = WRLD_LIFE reservation above). The frozen region band 92-106 stays
+// byte-identical: the module axis extends ONLY over new ids with default
+// semantics for existing nodes - a node without a MODSET row simulates ALL
+// groups (MOD_GRP_MASK_ALL), a handoff without a 128 row moves the full set.
+// No version handshake, no coexistence window (the NMQ/RMQ lesson, T5).
+// All four ride the existing relay: ORCHESTRATOR → Replica park → targeted
+// relay to ONE conn (frame-93 pattern), far under the 65536 lane fit.
+// ---------------------------------------------------------------------------
+constexpr uint8_t BIN_MSG_WORLD_MODSET_ASSIGN  = 125u; // Engine → Replica → World: WHICH groups of the region this node simulates
+constexpr uint8_t BIN_MSG_WORLD_MODSET_DECLARE = 126u; // World → Replica: the complete (region, grp_mask) set this node serves
+constexpr uint8_t BIN_MSG_WORLD_MODSET_RELINQ  = 127u; // Replica → World: give up this group subset of the region
+constexpr uint8_t BIN_MSG_WORLD_HOFF_MODSET    = 128u; // Engine → Replica: the group subset of a handoff, declared BEFORE BEGIN(97)
+
+// Frame-125 layout: [125][region_id:u32][epoch:u32][to_node_id:u32][grp_mask:u64] = 21 B.
+// Rides BESIDE frame 93 (which stays byte-identical); without a 125 row the assignment
+// covers ALL groups - today's behaviour is the default, never a break.
+constexpr uint32_t MODSET_ASSIGN_FRAME_SZ   = 21u;  // [125](1) + region_id(4) + epoch(4) + to_node_id(4) + grp_mask(8)
+constexpr uint32_t MODSET_ASSIGN_OFF_REGION = 1u;   // u32 offset of the assigned region id
+constexpr uint32_t MODSET_ASSIGN_OFF_EPOCH  = 5u;   // u32 offset of the assignment epoch (stale drops, frame-93 discipline)
+constexpr uint32_t MODSET_ASSIGN_OFF_NODE   = 9u;   // u32 offset of the target node id (the Replica relays to THAT conn only)
+constexpr uint32_t MODSET_ASSIGN_OFF_MASK   = 13u;  // u64 offset of the group bitmask (mod_grp_bit over the dense registry)
+
+// Frame-126 layout: [126][proto:u16][count:u16][{region_id:u32, grp_mask:u64}*N] - the
+// REGION_DECLARE(92) pattern: the COMPLETE set each time, so a re-send is an idempotent
+// upsert; the Replica reconciler checks coverage per (region, group).
+constexpr uint16_t MODSET_DECLARE_PROTO_VER = 1u;   // bumped only by a contract change, never silently
+constexpr uint32_t MODSET_DECLARE_HDR_SZ    = 5u;   // [126](1) + proto:u16(2) + count:u16(2)
+constexpr uint32_t MODSET_DECLARE_ROW_SZ    = 12u;  // region_id(4) + grp_mask(8) per declared region
+// MODSET_DECLARE_FRAME_MAX (the lane-fit ceiling) is declared below the region
+// identity block - it derives from WORLD_REGION_MAX, which is declared there.
+
+// Frame-127 layout: [127][region_id:u32][epoch:u32][grp_mask:u64] = 17 B - the subset
+// relinquish, REGION_RELINQUISH(94) pattern (94 itself stays the full-region teardown).
+constexpr uint32_t MODSET_RELINQ_FRAME_SZ   = 17u;  // [127](1) + region_id(4) + epoch(4) + grp_mask(8)
+constexpr uint32_t MODSET_RELINQ_OFF_REGION = 1u;   // u32 offset of the region id
+constexpr uint32_t MODSET_RELINQ_OFF_EPOCH  = 5u;   // u32 offset of the relinquish epoch
+constexpr uint32_t MODSET_RELINQ_OFF_MASK   = 9u;   // u64 offset of the group bitmask being given up
+
+// Frame-128 layout: [128][handoff_id:u64][grp_mask:u64] = 17 B - declares the group
+// subset of a handoff BEFORE its BEGIN(97); without a 128 row the handoff moves ALL
+// groups (today's behaviour). handoff_id = (region_id<<32)|epoch stays collision-free:
+// every attempt bumps the epoch, so two partial handoffs are two epochs.
+constexpr uint32_t HOFF_MODSET_FRAME_SZ    = 17u;   // [128](1) + handoff_id(8) + grp_mask(8)
+constexpr uint32_t HOFF_MODSET_OFF_HANDOFF = 1u;    // u64 offset of the handoff id the mask scopes
+constexpr uint32_t HOFF_MODSET_OFF_MASK    = 9u;    // u64 offset of the group bitmask of the partial handoff
+
+// ---------------------------------------------------------------------------
+// The lattice pressure lane - frames 129/130 (CONTRACT AMENDMENT 2026-08-04,
+// PLAN_ASE_PRESSURE_PHASE_03_SEAM WS-C.1/WS-C.3).
+//
+// Frame 122 above opened the cell seam for the ZONE ASCENT - an event row that
+// fires once per promotion and carries state, gate_mask and sect_id. It carries
+// NEITHER the measured column load NOR the lattice contract the address is
+// expressed in (that gap is stated in the phase plan, WS-C.4). Phase 02 built
+// the measurement (GisColLodComponent: occupancy, dlt_rate and the folded 0..1
+// pressure) but it never left the World: measured 2026-08-04, GisColLodComponent
+// had zero readers outside ase-gis and its own tests, and the Replica had no
+// cell-load mirror at all. These two frames are that missing leg.
+//
+// WHY TWO FRAMES AND NOT AN EXTENSION OF 122: the ascent is an EVENT, the load
+// is a periodic SAMPLE of a cell that may never ascend (a marker column is
+// measured too, gis_col_lod_sys.cpp pass 3 walks GisHxgnMrkrComponent). Riding
+// the sample on the promotion frame would deliver each cell's load exactly once,
+// at promotion time, and freeze it there - the "frozen boot values" failure the
+// phase plan warns about, one layer up. 122 stays byte-identical.
+//
+// WHY THE HEADER TRAVELS AT ALL: the display level and the ellipsoid are World
+// truth (ase-gis GIS_HXGN_ELSD_SEMI_MAJOR_M / _FLATTENING, math::HexgridEllipsoid).
+// The Replica is L3 and may not include ase-gis, so without this frame it would
+// have to restate those constants - a second truth, and an ellipsoid change in
+// the backend would tear the picture silently (phase plan gap L-6). The header
+// is planet-wide, not per project: the Replica joins it to each project it
+// already owns, so no project identity rides the wire that the Replica cannot
+// already resolve.
+//
+// Both are World → Replica on the existing binary WS lane, behind the same conn
+// and region gates as TERRAIN_DELTA(106) and GIS_CELL_ZONE(122). Sizes are 13 B
+// and 25 B - far under the 65536 lane fit, and a re-send is an idempotent upsert
+// keyed on (proj_hash,cx,cz), so an at-least-once wire needs no extra logic.
+// ---------------------------------------------------------------------------
+constexpr uint8_t BIN_MSG_GIS_LATTICE_HEAD = 129u; // World → Replica: the lattice contract (level + ellipsoid) of the simulated planet
+constexpr uint8_t BIN_MSG_GIS_CELL_LOAD    = 130u; // World → Replica: one measured cell column (occupancy, delta rate, folded load)
+
+// Frame-129 layout: [129][level:u32][semi_major_axis_m:f32][flattening:f32] = 13 B.
+// level is the address level the cx/cz of frame 130 (and of frame 122) are expressed in -
+// math::HEXGRID_ADDRESS_LEVEL_MAX unless a coarser epoch is in use; the client derives its
+// draw resolution from it (hexgrid_epoch_step). The two ellipsoid fields are the field names
+// and units of math::HexgridEllipsoid: equatorial radius in metres and the dimensionless
+// (a-b)/a. Floats ride bit-exact via memcpy, like every other float on this lane.
+constexpr uint32_t LATTICE_HEAD_FRAME_SZ  = 13u;  // [129](1) + level:u32(4) + semi_major:f32(4) + flattening:f32(4)
+constexpr uint32_t LATTICE_HEAD_OFF_LEVEL = 1u;   // u32 offset of the address level of the live lattice
+constexpr uint32_t LATTICE_HEAD_OFF_SEMI  = 5u;   // f32 offset of the equatorial radius a, metres
+constexpr uint32_t LATTICE_HEAD_OFF_FLAT  = 9u;   // f32 offset of the flattening (a-b)/a, 0 = sphere
+
+// Frame-130 layout:
+// [130][region_id:u32][cx:i32][cz:i32][occupancy:u32][dlt_rate:f32][load:f32] = 25 B.
+// region_id routes the row through the SAME ownership gate as 122 (the sending conn must own
+// the region and the cell must sit in its declared half-open rect), so proj_hash is resolved
+// on the Replica side by the region join and never asserted by the sender.
+// occupancy and dlt_rate are the two MEASURED terms; load is the fold of exactly those two
+// (gis_col_lod_sys.cpp fold_column_pressure). All three travel, so the client can show why a
+// tile is hot without recomputing a weight it does not own.
+// ABSENCE IS NOT ZERO: a cell whose last occupancy row retired LOSES GisColLodComponent
+// outright (gis_col_lod_sys.cpp pass 1). It then stops being published and despawns on the
+// client - it never ships a fabricated 0.0.
+constexpr uint32_t CELL_LOAD_FRAME_SZ   = 25u;  // [130](1) + region(4) + cx(4) + cz(4) + occupancy(4) + dlt_rate(4) + load(4)
+constexpr uint32_t CELL_LOAD_OFF_REGION = 1u;   // u32 offset of the routing region id
+constexpr uint32_t CELL_LOAD_OFF_CX     = 5u;   // i32 offset of the cell chunk X
+constexpr uint32_t CELL_LOAD_OFF_CZ     = 9u;   // i32 offset of the cell chunk Z
+constexpr uint32_t CELL_LOAD_OFF_OCC    = 13u;  // u32 offset of the column occupancy of this sample
+constexpr uint32_t CELL_LOAD_OFF_DLT    = 17u;  // f32 offset of the cell delta rate, per second
+constexpr uint32_t CELL_LOAD_OFF_LOAD   = 21u;  // f32 offset of the folded 0..1 column pressure
+
+// RETIRE ROW - the honest opposite of a fabricated zero. A measured column that loses its last
+// occupancy row is not "a cell with load 0", it is a cell that is no longer measured, and the
+// tile must fall back to ABSENT rather than to a cold colour. The folded load is contractually
+// clamped into 0..1 (ase-gis GIS_COL_LOD_MIN/_MAX), so a negative value can never collide with a
+// measurement; this is the same -1 ABSENT sentinel the tier vitals already carry on this codebase
+// (PLAN_ASE_HUB_OWNR_SCOPE, null-tile fix 2026-07-30). On receipt the Replica REMOVES the load
+// mirror of that cell; the push row then carries the address without a load field, and the client
+// draws ABSENT.
+constexpr float CELL_LOAD_ABSENT = -1.0f;  // wire sentinel: this column is no longer measured
+
+// THE RANGE THE FRAME MAY CARRY - declared HERE because both ends read it. The folded pressure is
+// normalised, so a value outside this band is a producer defect and the decoder drops it rather
+// than painting a tile that earned no colour. This is the WIRE contract; the fold clamp inside
+// ase-gis is that module's own business, and the receiver may not include ase-gis to ask.
+constexpr float CELL_LOAD_MIN = 0.0f;  // lowest folded pressure a measurement row may carry
+constexpr float CELL_LOAD_MAX = 1.0f;  // highest folded pressure a measurement row may carry
+
+// An equatorial radius at or below this is a zeroed frame, not a planet. Same reasoning as the
+// load band: the decoder needs a validity bound it can read without asking the producing module.
+constexpr float LATTICE_HEAD_SEMI_MIN_M = 1.0f;  // smallest radius that still describes a body
+
+// Flattening is (a-b)/a and therefore lives in [0, 1): 0 is a sphere and 1 would be a disc with no
+// polar axis at all. The projection clamps at 0.999 for exactly that reason, so a value at or above
+// this bound is a corrupt frame, not an exotic planet - the decoder drops it instead of mirroring a
+// contract that cannot be drawn.
+constexpr float LATTICE_HEAD_FLAT_MAX = 0.999f;  // highest flattening a contract row may carry
+
 // ---------------------------------------------------------------------------
 // Region identity + geometry
 // ---------------------------------------------------------------------------
 constexpr uint32_t REGION_ID_NONE       = 0u;    // sentinel: no region (never a valid region_id)
 constexpr uint16_t WORLD_REGION_MAX     = 256u;  // max regions one World node may own at once
 constexpr uint16_t REGION_RECT_WIRE_SZ  = 20u;   // bytes one RegionRect occupies on the wire (u32 + 4x i32)
+constexpr uint32_t MODSET_DECLARE_FRAME_MAX = MODSET_DECLARE_HDR_SZ
+                                            + static_cast<uint32_t>(WORLD_REGION_MAX)
+                                            * MODSET_DECLARE_ROW_SZ;  // frame-126 ceiling: 5 + 256*12 = 3077 B << 65536 lane fit
 
 // Frame-92 layout. CONTRACT AMENDMENT 2026-07-28: the frozen plan fixes the shape as
 // [92][proto:u16][region_count:u16][RegionRect*N] (PLAN_ASE_COMPUTE master wire table) but the
@@ -185,6 +450,28 @@ constexpr bool chunk_in_region(int32_t cx, int32_t cz,
                                int32_t cx0, int32_t cz0, int32_t cx1, int32_t cz1) {
     return cx >= cx0 && cx < cx1 && cz >= cz0 && cz < cz1;
 }
+
+/**
+ * RegionGrpDltComponent - per-(region, module-group) outbound-delta counter (World-local).
+ *
+ * CONTRACT AMENDMENT 2026-08-03 (PLAN_ASE_COMPUTE_MOD_AXIS.md T3): the group axis needs the
+ * outbound-delta rate PER GROUP, and the producer of a delta is not the module that owns the
+ * region rows - the terrain egress (ase-terrain, frame 106/SNAP staging) attributes its staged
+ * deltas to MOD_GRP_TERR at its region gate, while the consumer (the World group-load system,
+ * ase-world) differences the counter. Two L3 modules never include each other, so the row is an
+ * L0 POD - the exact region_wire seam RegionRect already rides in the same egress loop.
+ *
+ * Counter discipline mirrors WorldCchRgnDltComponent: dlt_count only ever grows (producer-owned),
+ * dlt_seen is the consumer's sample cursor. u32 wrap is harmless - the consumer differences.
+ * Producers of the other groups join at their own egress attribution seams by amendment; a group
+ * without a producer keeps count 0 and its rate honestly reads 0.
+ */
+struct RegionGrpDltComponent {
+    uint32_t region_id = 0;  // join axis 1 (REGION_ID_NONE when unset)
+    uint32_t grp_id = 0;     // join axis 2 (dense module-group id, registry above)
+    uint32_t dlt_count = 0;  // running count of outbound deltas this group staged for this region (grows only)
+    uint32_t dlt_seen = 0;   // consumer cursor: last sampled dlt_count
+};
 
 // ---------------------------------------------------------------------------
 // ChunkSnapEntry - the full-fidelity per-chunk terrain slice (SNAP_PAGE payload).
@@ -220,6 +507,38 @@ constexpr uint32_t SNAP_PAGE_OFF_REGION    = 9u;      // u32 offset of the regio
 constexpr uint32_t SNAP_PAGE_OFF_PAGE_IDX  = 13u;     // u32 offset of this page's index
 constexpr uint32_t SNAP_PAGE_OFF_PAGE_TOT  = 17u;     // u32 offset of the total page count
 constexpr uint32_t SNAP_PAGE_OFF_ENTRY_CNT = 21u;     // u16 offset of the entry count in this page
+
+/**
+ * TERRAIN_PAGE_NACK(131) - the back channel of the baseline lane (Replica → World)
+ *
+ * WHY IT EXISTS. The terrain publisher treats a successful ws->send() as delivery: it advances the
+ * chunk's syn_ver and clears the staging row immediately afterwards. send() only means "handed to
+ * the socket", so anything the receiver refuses is lost FOREVER - the version cursor says the chunk
+ * is already replicated, and it only returns to the wire if the terrain changes again.
+ *
+ * MEASURED 2026-08-06 15:50:59: one observer appeared, 289 baseline pages went out in one burst,
+ * the Replica's frame park (HOFF_PAGE_PARK_MAX = 256) overflowed and logged exactly 289 - 256 = 33
+ * "frame park full ... dropped" warnings. The mirror indexed 0 chunks. Nothing on the sending side
+ * noticed, because nothing on the sending side could.
+ *
+ * WHAT IT CARRIES. The identity of ONE refused chunk plus the reason - region, chunk address and
+ * the version the sender believed it had delivered. The World rewinds that chunk's syn_ver below
+ * its ver, which is all the existing machinery needs: TerrainDltMarkSystem re-stages the row and
+ * the publisher ships it again. No new retransmission path, no shadow queue - the version cursor
+ * IS the retransmission mechanism, it simply never learned that a frame did not arrive.
+ *
+ * SCOPE. Load-baseline pages (handoff_id == 0). Handoff pages already detect loss through the
+ * per-handoff page bitset against page_total, so they need no NACK.
+ *
+ * The reason byte reuses the GATE_REASON_* vocabulary of ase-replication (LANE_FULL = 6 is the
+ * park overflow) so the refusal reads the same on both ends.
+ */
+constexpr uint32_t TRN_NACK_FRAME_SZ   = 22u;  // id(1) + region(4) + cx(4) + cz(4) + version(8) + reason(1)
+constexpr uint32_t TRN_NACK_OFF_REGION = 1u;   // u32 offset of the region the chunk belongs to
+constexpr uint32_t TRN_NACK_OFF_CX     = 5u;   // i32 offset of the refused chunk X
+constexpr uint32_t TRN_NACK_OFF_CZ     = 9u;   // i32 offset of the refused chunk Z
+constexpr uint32_t TRN_NACK_OFF_VER    = 13u;  // u64 offset of the version the sender had settled
+constexpr uint32_t TRN_NACK_OFF_REASON = 21u;  // u8 offset of the GATE_REASON_* refusal cause
 
 // Frame-93/94/95/97/98/99 layouts. CONTRACT AMENDMENT 2026-07-29: the frozen plan fixes these
 // shapes in the master wire table (PLAN_ASE_COMPUTE.md 200-216) - 93 as
@@ -261,7 +580,7 @@ constexpr uint32_t HOFF_ACK_OFF_REGION  = 9u;   // u32 offset of the region id
 constexpr uint32_t HOFF_ACK_OFF_PHASE   = 13u;  // u8 offset of the phase code below
 constexpr uint8_t HOFF_ACK_SUBSCRIBED   = 1u;  // B subscribed to the region stream (phase 1)
 constexpr uint8_t HOFF_ACK_CAUGHT_UP    = 2u;  // B's TERRAIN lag reached zero (phase 2 - never the commit gate)
-constexpr uint8_t HOFF_ACK_ACTORS_READY = 3u;  // B instantiated EVERY resident actor (phase 3 - THE commit gate)
+constexpr uint8_t HOFF_ACK_ACTORS_READY = 3u;  // B instantiated EVERY resident actor (phase 3 - THE commit gate). Module axis: for a handoff scoped by HOFF_MODSET(128) the SAME ack means "every resident actor OF THE MASKED GROUPS" - B knows its scope from the 125 fold, the frame is unchanged (no per-group ack field, the mask row is the scope authority)
 constexpr uint8_t HOFF_ACK_DRAINED      = 4u;  // A finished its ordered drain (actors destroyed, chunks unloaded)
 constexpr uint8_t HOFF_ACK_ERROR        = 5u;  // refusal (schema mismatch, OOM) - A aborts, keeps actors, zero loss
 
@@ -295,6 +614,31 @@ constexpr uint32_t PLAYER_MIGRATE_FRAME_SZ   = PLAYER_MIGRATE_HDR_SZ + PLAYER_SN
 // EntitySnap - the type-generic TLV an entity's replicated components serialize
 // into, so migration never needs a runtime type switch: one codegen-generated
 // per-type emitter appends {type_id, len, bytes} to the entity's page.
+//
+// MIRROR CONDITIONS A1-A8 (CONTRACT AMENDMENT 2026-08-03, PLAN_ASE_COMPUTE_MOD_AXIS
+// T1 verdict "TRAGFAEHIG MIT-AUFLAGEN"): every process that instantiates entities
+// from these pages - the module-axis mirror of a partial handoff as much as the
+// full-region handoff - obeys ALL EIGHT, they are protocol discipline, not hints:
+//   A1  one allocator per number space: ONLY the owner process calls create();
+//       mirrors use create(hint) exclusively (EnTT hands indices out densely from
+//       0, two independent creators collide immediately)
+//   A2  CHECK the hint return: create(hint) != hint is a HARD error path
+//       (log::error + re-sync over SNAP_REQ(95)), never a silent continue -
+//       a live index makes EnTT return a DIFFERENT id without any error
+//   A3  causal order on the seam: deliver destroy(i,v) BEFORE create(i,v+1)
+//       (the per-entity sequence IS the epoch)
+//   A4  entity_epoch (u32, header below) is the identity authority; the 12-bit
+//       EnTT version is a local recycling detail (4095 versions, then ABA)
+//   A5  NO owner/process/group bits inside the u32 id (PLAN_ASE_COMPUTE.md:246)
+//   A6  id width frozen at the uint32 default; ENTT_ID_TYPE override forbidden
+//       (enforced by the static_assert in core/ase-ecs system.hpp)
+//   A7  entity ids never ride the hub as a numeric f32 (version bits sit above
+//       2^24) - HI/LO bit patterns only (hub_metrics.json discipline)
+//   A8  the lifecycle rides the WIRE; on_construct/on_destroy are in-process
+//       delegates and fire NOTHING across processes - local taps only
+// The per-type emitters land with the ase-entity/ase-creature codegen systems
+// (PLAN_ASE_COMPUTE_PHASE_06_WORLD WS-H.4); PlayerSnap (frame 100) is the built
+// precedent and already travels logical ids + epoch, never raw EnTT ids.
 // ---------------------------------------------------------------------------
 constexpr uint32_t ENTITY_SNAP_HDR_SZ        = 12u;  // schema_ver(2) + entity_id(4) + entity_epoch(4) + component_count(2)
 constexpr uint32_t ENTITY_SNAP_OFF_SCHEMA    = 0u;   // u16 schema version
@@ -338,6 +682,82 @@ struct CapacityReqRelinquishTag {};  // the region is given up entirely (project
 // provided sits idle. Frame 93 stays untouched (versionless, one-rect): this is an empty Tag, not a
 // wire change; the class it selects is drained onto the EXISTING assign path.
 struct CapacityReqAssignTag {};      // give an already-created region to an already-live node (no spawn)
+
+// CONTRACT AMENDMENT 2026-08-02 (Task 14 scale-in). A SEVENTH intent class, added under the same
+// precedent as the six tags above. The surplus rule (capacity_rcn_srpl_sys.cpp) is the reverse of
+// FLOOR: it retires ONE running, region-less World instance of a project that owns more instances
+// than its target justifies - measured live 2026-08-02, two FLOOR-ordered instances (9100/9102)
+// sat idle with no rule to take them back and had to be stopped by hand. None of the six classes
+// above carries that meaning, measured at their drains: CapacityReqSplitTag turns into a spawn
+// whenever to_node is 0 (capacity_orch_req_splt_sys.cpp:291-292), CapacityReqSpawnTag turns every
+// drained intent into a fresh port + node id reservation (capacity_orch_req_spwn_sys.cpp, reserve
+// pass), CapacityReqRebalanceTag DROPS a targetless intent (capacity_orch_req_blnc_sys.cpp),
+// CapacityReqMergeTag moves regions between running nodes (capacity_orch_req_mrge_sys.cpp), and
+// CapacityReqRelinquishTag gives up a REGION over frame 94 (capacity_orch_req_rels_sys.cpp) -
+// every one of them is REGION-directed and none stops an instance. This class is INSTANCE-directed
+// and never reaches the wire: the drain (capacity_orch_req_retr_sys.cpp) stops the unit through
+// the launcher seam and walks the existing death ladder (DeadTag + retire sweep + token drop-in
+// removal), so no frame id is allocated and frame 93/94 stay untouched. Which instance dies is
+// orchestration state, not scheduler state - the intent names only the project, exactly as the
+// FLOOR spawn intent names no node.
+struct CapacityReqRetireTag {};      // retire one surplus region-less instance (stop unit via seam, death ladder)
+
+// CONTRACT AMENDMENT 2026-08-03 (module axis, PLAN_ASE_COMPUTE_MOD_AXIS.md T3/T4). The EIGHTH and
+// NINTH intent classes, added under the same precedent as the seven above - and a GROUP intent POD
+// beside CapacityReqXmitComponent, because the module axis moves a GROUP SUBSET of a region while
+// the geometry stays untouched: none of the region intents carries a grp_mask, and widening the
+// frozen five-field Xmit POD would touch every existing drain. MSPL (module split) fires when one
+// group dominates a region's load vector (share >= CAP_MODSPLIT_DOMINANCE); MFSE (module re-fuse)
+// reverses it when the dominance decayed below the hysteresis floor. Both are GROUP-directed:
+// the assignment unit is the causality GROUP, never the single module.
+
+/** One group-subset movement intent: which groups of a region move from which node to which node. */
+struct CapacityReqGrpXmitComponent {
+    uint32_t region_id = 0;  // REGION_ID_NONE until the scheduler picked the region
+    uint32_t from_node = 0;  // node id giving the group subset up (the current holder)
+    uint32_t to_node = 0;    // node id taking the subset over (0 = drain refuses, BLNC discipline)
+    uint64_t grp_mask = 0;   // group subset that moves (mod_grp_bit set over the dense registry)
+    uint32_t epoch = 0;      // monotonic intent epoch, so a stale intent is dropped not replayed
+};
+
+struct CapacityReqModSplitTag {};    // MSPL: the masked groups leave the region onto a second node
+struct CapacityReqModFuseTag {};     // MFSE: the masked groups return to the region's main owner
+
+/**
+ * CapacityGrpAsgnComponent - one standing group assignment the orchestrator relayed (Engine ledger).
+ *
+ * The SRPL liftability gate reads it: a node that carries the LAST instance of a group assignment
+ * is NOT liftable (the analogue of the FLOOR-coverage gate) - without this row a module-split
+ * target looks region-less to the surplus rule and would be retired while it simulates. Written by
+ * the MSPL drain (L4), erased by the MFSE drain, read by the surplus rule (L3) - the shared home
+ * is this L0 header, exactly like the intent PODs above.
+ */
+struct CapacityGrpAsgnComponent {
+    uint32_t node_id = 0;    // node serving the group subset (the not-liftable carrier)
+    uint32_t region_id = 0;  // region whose subset it serves
+    uint64_t grp_mask = 0;   // the standing subset (mod_grp_bit set)
+};
+
+/**
+ * CapacityRetireBusyComponent - the drain's answer when a retire order found only WORKING seeds.
+ *
+ * The fourth POD of the retire amendment, and it closes the attribution gap the two count axes
+ * open: the scheduler's instance count is keyed by the SEED project while its coverage count is
+ * keyed by the REGION's project - so a node seeded for P that covers only ANOTHER project's
+ * regions inflates P's instance count forever, yet is never retirable (a holder is untouchable).
+ * Without this answer the surplus rule re-raises the same order at every shard visit and the
+ * drain drops it every time - an unbounded decide/drop loop of intent churn and warn spam.
+ *
+ * So the drain replaces such an order with this row (the Genesis-WAIT precedent: the state is
+ * named ONCE, then the log stays quiet), stamped with the bridged instance count the verdict was
+ * made at. The scheduler stands down while the count still matches and destroys the row the
+ * moment it moved; the drain itself removes the row as soon as a retirable candidate exists
+ * again, because "my seed went idle" changes NO number the scheduler can see.
+ */
+struct CapacityRetireBusyComponent {
+    uint32_t proj_hash = 0;      // project whose retire order found only working seeds
+    uint32_t inst_snapshot = 0;  // bridged instance count the verdict was made at (0 = unset)
+};
 
 // CONTRACT AMENDMENT 2026-07-28 (PLAN_ASE_COMPUTE_PHASE_02_ORCH WS-D.2). Two more shared PODs,
 // added under the same precedent as CapacityReqXmitComponent above: ase-capacity (L3) and
@@ -397,6 +817,42 @@ struct CapacityNodeAdopComponent {
     uint32_t port = 0;                            // listen port = systemd instance id to verify
     uint32_t proj_hash = 0;                       // project the node was spawned for
     uint32_t spawn_wall_s = 0;                    // unit-start wall second (0 = unknown)
+};
+
+/**
+ * CapacityRegionAdopComponent - one ownership row delivered so a restarted Engine can rebuild it.
+ *
+ * The node row above restores WHICH compute nodes exist. This one restores WHAT THEY SERVE, and
+ * without it a restored fleet is a set of anonymous processes: the orchestrator's assignment ledger
+ * and the scheduler's region rows are both RAM-only, so an Engine restart forgets every region to
+ * node binding while the Worlds keep serving their rects unchanged.
+ *
+ * That gap is not a blind spot, it is a standstill (measured 2026-08-01, Engine restart 13:27:34):
+ * the Replica's surviving DECLARE holds CAP_PROJ_LIVE_REGIONS at 1, so GENESIS - which acts only on
+ * a project with NO region - stands down; no intent exists for the assign path to work on; and the
+ * coverage count reads 0 because the row names node 7, an identity the restarted Engine never
+ * adopted. Nothing can create the state, nothing can repair it, and FLOOR reads that 0 as a deficit
+ * and orders one more instance every cycle.
+ *
+ * The Replica holds the truth across the restart - ReplicaWrldRgnComponent carries region_id,
+ * proj_hash, epoch and the mesh identity node_id, joined to its rect by region_id, and the durable
+ * copy lives in the capacity_regions collection the handoff path already writes. So the row travels
+ * the same filtered bridge and lands in ase-capacity (L3), which may read the hub. The plugin (L4)
+ * may not, so the delivered row crosses HERE, exactly like the node row above.
+ *
+ * Like that one it is a REQUEST, not a claim: it states that this region was owned by this node.
+ * Whether the node still exists is the adopt pass's question, and a row whose node was not adopted
+ * is NOT restored but re-queued - an orphaned region belongs back in the assign loop, never into a
+ * ledger that points at nobody.
+ *
+ * The rect rides beside it in the RegionRect POD above, on the same delivery entity: rect geometry
+ * has one shape in this codebase and a second copy of the four edges would be a second truth.
+ */
+struct CapacityRegionAdopComponent {
+    uint32_t region_id = 0;  // the region's durable identity
+    uint32_t proj_hash = 0;  // project the region belongs to
+    uint32_t node_id = 0;    // mesh identity that served it (0 = unbound, re-queue instead)
+    uint32_t epoch = 0;      // assignment epoch, so a rebuilt row keeps its ordering
 };
 
 }  // namespace ase::types

@@ -94,10 +94,13 @@ add_library(${PROJECT_NAME} INTERFACE
 
     #[[
     HEXGRID WIRE
-    Frozen planet hex-lattice seam: the ONE chunk-id packing (chunk_coords_to_id /
-    cell_to_chunk_id at CELL_CHUNK_Y), the int32-through-f32 hub bit-pattern codec, and the
-    cell-interaction / project-spawn intent PODs. Shared by World, Replica and Engine so no
-    module restates the packing (PLAN_ASE_LATTICE_PHASE_00_CONTRACT WS-K.2b, WS-K.4).
+    Frozen planet hex-lattice seam: the ONE chunk-id packing in its two forms (3D
+    chunk_coords_to_id at 20 bits per axis for the height stack, 2D cell_to_chunk_id at 32 bits
+    per axis for the lattice plane, plus chunk_id_to_cell_x / chunk_id_to_cell_z), the
+    int32-through-f32 hub bit-pattern codec, and the cell-interaction / project-spawn intent PODs.
+    Shared by World, Replica and Engine so no module restates the packing
+    (PLAN_ASE_LATTICE_PHASE_00_CONTRACT WS-K.2b, WS-K.4; 2D width amended 2026-08-04 by
+    PLAN_ASE_PRESSURE_PHASE_01_ADDR).
     ]]
     include/ase/types/hexgrid_wire.hpp
 )

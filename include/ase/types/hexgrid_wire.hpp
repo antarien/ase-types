@@ -13,6 +13,14 @@
  *                 L3-to-L3 include would have been the layer violation that produced the copies in
  *                 the first place. The one definition lives HERE, below every consumer.
  *
+ *                 CONTRACT AMENDMENT 2026-08-04 (PLAN_ASE_PRESSURE_PHASE_01_ADDR.md): the 2D cell
+ *                 form is WIDENED to 32 bits per axis. The 3D form keeps its 20-bit layout. The
+ *                 20-bit layout was frozen on 2026-07-30 against a measured EMPTY address space
+ *                 (PLAN_ASE_LATTICE_PHASE_00_CONTRACT.md:243); the lattice address space that
+ *                 followed reaches cx = 10223616 (ase-math/hexgrid.hpp:189) and every second
+ *                 icosahedron face aliased onto the same key. Measured before the change: 5242900
+ *                 valid cx produced 524290 distinct keys, group size uniformly 10.
+ *
  *              2. THE HUB BIT-PATTERN CODEC (WS-K.2 trap 3). A cell coordinate is an int32 and
  *                 must never enter float arithmetic - the hub value slot is f32 and everything
  *                 above 2^24 would come back corrupt. The codec moves the BIT PATTERN, never the
@@ -35,8 +43,8 @@
  * @module      ase-types
  * @layer       0 (Foundation)
  * @created     2026-07-31
- * @modified    2026-07-31
- * @version     1.0.0
+ * @modified    2026-08-04
+ * @version     1.1.0
  *
  * ECS TYPES COMPLIANCE
  *
@@ -55,12 +63,26 @@
 namespace ase::types {
 
 // ---------------------------------------------------------------------------
-// CHUNK-ID PACKING (SSOT) - 20 bits per axis, centre-offset, x | y<<20 | z<<40
+// CHUNK-ID PACKING (SSOT) - TWO forms, and they are deliberately NOT the same
+// number for the same place.
 //
-// Bit layout taken over UNCHANGED from the terrain constants it supersedes
-// (modules/ase-terrain/include/ase/terrain/types.hpp:182-184 and :655-659). The
-// values are mirrored, not included, because Layer 0 must not include Layer 3;
-// the identity of both packings is pinned by a test.
+// 3D form, chunk_coords_to_id: 20 bits per axis, centre-offset,
+// x | y<<20 | z<<40. Bit layout taken over UNCHANGED from the terrain constants
+// it supersedes (modules/ase-terrain/include/ase/terrain/types.hpp:182-184 and
+// :655-659). The values are mirrored, not included, because Layer 0 must not
+// include Layer 3; the identity of the 3D form with that reference is pinned by
+// a test. Three axes in a u64 cap at 21 bits each, so this form cannot carry the
+// lattice address space and does not try to - it carries the HEIGHT axis, where
+// cy really varies.
+//
+// 2D form, cell_to_chunk_id: 32 bits per axis, no mask and no offset,
+// u32(cx)<<32 | u32(cz). A lattice cell has no height, so the 20 bits the 3D form
+// spends on the constant CELL_CHUNK_Y are exactly the bits the X axis was
+// missing. Redistributing them keeps the key at 64 bits and makes it injective
+// over the whole int32 plane. The form is not invented here: it is the one
+// already used productively for the same purpose in
+// modules/ase-replication/src/resource/replica_cell_tplg_resource_manager.cpp:53-56
+// and replica_rgn_chnk_resource_manager.cpp:55.
 // ---------------------------------------------------------------------------
 
 /** Bits one axis occupies inside the packed chunk id. */
@@ -73,16 +95,27 @@ constexpr uint32_t CHUNK_ID_MASK = (1u << CHUNK_ID_BITS) - 1u;
 constexpr int32_t CHUNK_ID_OFFSET = 1 << (CHUNK_ID_BITS - 1);
 
 /**
- * The fixed vertical axis of a 2D cell packing.
+ * The vertical slice a lattice cell sits on - the frozen address invariant.
  *
- * A lattice cell IS a chunk address (cx,cz) - two dimensions - while the packing is three
- * dimensional. CELL_CHUNK_Y closes that arity gap once, so two modules can never derive a
- * different u64 for the same cell. Zero is the only reading the existing code allows: the chunk
- * grid is the coordinate system and y is intra-chunk height, not a partition axis
- * (PLAN_ASE_COMPUTE.md:193), the region rect carries no y at all (region_wire.hpp:151-163), and
- * the terrain coordinate component documents its vertical slice as 0 in the flat case.
+ * A lattice cell IS a chunk address (cx,cz) - two dimensions. Zero is the only reading the
+ * existing code allows: the chunk grid is the coordinate system and y is intra-chunk height, not
+ * a partition axis (PLAN_ASE_COMPUTE.md:193), the region rect carries no y at all
+ * (region_wire.hpp:151-163), and the terrain coordinate component documents its vertical slice as
+ * 0 in the flat case. That reading is frozen as point (5) of the master freeze row
+ * (PLAN_ASE_LATTICE.md:108) and stays frozen.
+ *
+ * What it is NOT, since 2026-08-04: it is no longer the arity closer of the 2D cell packing.
+ * cell_to_chunk_id packs two axes at full width and passes no y at all. CELL_CHUNK_Y is the slice
+ * a caller hands to chunk_coords_to_id when it wants the GROUND CHUNK of a cell in the 3D key
+ * space - a different number in a different key space, see cell_to_chunk_id below.
  */
 constexpr int32_t CELL_CHUNK_Y = 0;
+
+/** Bits one axis occupies inside the packed 2D cell id - the full width of an int32 axis. */
+constexpr uint32_t CELL_ID_AXIS_BITS = 32u;
+
+/** Mask of one packed 2D cell axis - the low CELL_ID_AXIS_BITS bits. */
+constexpr uint64_t CELL_ID_AXIS_MASK = 0xFFFFFFFFull;
 
 /**
  * @brief Pack a three dimensional chunk address into its u64 id
@@ -102,16 +135,73 @@ constexpr uint64_t chunk_coords_to_id(int32_t cx, int32_t cy, int32_t cz) {
 }
 
 /**
- * @brief Pack a lattice cell address into its u64 chunk id
- * @param cx Cell chunk X
- * @param cz Cell chunk Z
- * @return Packed 64 bit chunk id at CELL_CHUNK_Y
+ * @brief Read a three dimensional chunk address back out of its u64 id
+ * @param chunk_id A value produced by chunk_coords_to_id
+ * @param[out] cx Chunk grid X
+ * @param[out] cy Chunk grid Y (vertical slice)
+ * @param[out] cz Chunk grid Z
  *
- * The 2D form every lattice consumer uses. It is the 3D packing at the fixed vertical axis, so a
- * cell id and the ground level chunk id of the same address are the SAME number by construction.
+ * The exact inverse of chunk_coords_to_id, and it lives HERE for the same reason the forward form
+ * does: a consumer that needs the vertical slice of a stored chunk id would otherwise restate the
+ * bit layout in its own module, and that is precisely how the packing came to exist three times
+ * over before it was single sourced. Addresses outside the +/- CHUNK_ID_OFFSET window were already
+ * folded by the forward masking; this reads back what the id actually carries, never what the
+ * caller originally meant.
+ */
+constexpr void chunk_id_to_coords(uint64_t chunk_id, int32_t& cx, int32_t& cy, int32_t& cz) {
+    cx = static_cast<int32_t>(chunk_id & CHUNK_ID_MASK) - CHUNK_ID_OFFSET;
+    cy = static_cast<int32_t>((chunk_id >> CHUNK_ID_BITS) & CHUNK_ID_MASK) - CHUNK_ID_OFFSET;
+    cz = static_cast<int32_t>((chunk_id >> (CHUNK_ID_BITS * 2)) & CHUNK_ID_MASK) - CHUNK_ID_OFFSET;
+}
+
+/**
+ * @brief Pack a lattice cell address into its u64 cell id
+ * @param cx Cell chunk X, any int32
+ * @param cz Cell chunk Z, any int32
+ * @return Packed 64 bit cell id, injective over the whole int32 plane
+ *
+ * The 2D form every lattice consumer uses. Both axes travel at full int32 width, so the lattice
+ * address cx = face * HEXGRID_FACE_STRIDE + i survives whole and two different cells can never
+ * meet on one key.
+ *
+ * STRUCK 2026-08-04 - the identity this function used to claim: "a cell id and the ground level
+ * chunk id of the same address are the SAME number by construction". That identity was the
+ * defect, not a feature: it forced the cell key through the 20-bit window of the 3D form, where
+ * face and face+2 landed on one key and each key carried exactly 10 of the 20 faces. Consumers
+ * were measured before the change (symbol sweep over cell_to_chunk_id and chunk_coords_to_id,
+ * the CellMap surface store_cell / get_cell / remove_cell / has_cell, and a semantic sweep against
+ * taxonomy namesakes): every productive key space is fed by exactly ONE of the two forms and no
+ * productive reader mixes them. The only consumer of the identity was the pin case in
+ * modules/ase-gis/tests/test_gis_hxgn.cpp, and it moves with this change. The identity is
+ * therefore severed on purpose, not lost by accident.
  */
 constexpr uint64_t cell_to_chunk_id(int32_t cx, int32_t cz) {
-    return chunk_coords_to_id(cx, CELL_CHUNK_Y, cz);
+    return (static_cast<uint64_t>(static_cast<uint32_t>(cx)) << CELL_ID_AXIS_BITS) |
+           static_cast<uint64_t>(static_cast<uint32_t>(cz));
+}
+
+/**
+ * @brief Read the cell X axis back out of a packed 2D cell id
+ * @param cell_id A value produced by cell_to_chunk_id
+ * @return The original cx, sign included
+ *
+ * The round trip is exact because the packing masks nothing away. The unsigned to signed cast is
+ * the two's-complement reinterpretation the language guarantees from C++20 on, which is the same
+ * discipline cell_coord_to_decimal already uses for the durable form: the sign comes out of the
+ * REPRESENTATION, never out of a comparison.
+ */
+constexpr int32_t chunk_id_to_cell_x(uint64_t cell_id) {
+    return static_cast<int32_t>(
+        static_cast<uint32_t>((cell_id >> CELL_ID_AXIS_BITS) & CELL_ID_AXIS_MASK));
+}
+
+/**
+ * @brief Read the cell Z axis back out of a packed 2D cell id
+ * @param cell_id A value produced by cell_to_chunk_id
+ * @return The original cz, sign included
+ */
+constexpr int32_t chunk_id_to_cell_z(uint64_t cell_id) {
+    return static_cast<int32_t>(static_cast<uint32_t>(cell_id & CELL_ID_AXIS_MASK));
 }
 
 // ---------------------------------------------------------------------------
@@ -159,6 +249,76 @@ inline int32_t hub_pattern_to_cell_coord(float pattern) {
     uint32_t hi = (bits >> CELL_COORD_HALF_BITS) & CELL_COORD_HALF_MASK;
     uint32_t lo = bits & CELL_COORD_HALF_MASK;
     return static_cast<int32_t>((hi << CELL_COORD_HALF_BITS) | lo);
+}
+
+/**
+ * @brief Write an int32 cell coordinate as a DECIMAL STRING, sign included
+ * @param out Destination buffer
+ * @param cap Capacity of out, including the terminator
+ * @param coord Cell coordinate, any int32 including the most negative value
+ * @return Written length, terminator excluded
+ *
+ * The durable form beside the hub-pattern form above, and it lives here for the same reason: a
+ * coordinate has ONE encoding per channel, and a second copy in some system's anonymous namespace
+ * is a second truth waiting to drift. The Mongo read path returns numbers as float32, so wide and
+ * signed values travel as quoted strings - a writer that emitted only digits would turn -40 into
+ * 40 and place a region on the wrong side of the origin, silently and durably.
+ *
+ * The sign is read from the two's-complement REPRESENTATION and the magnitude accumulated in
+ * unsigned space: the magnitude of the most negative int32 is not representable as a positive
+ * int32, so negating in signed space would be undefined for exactly one input.
+ */
+inline uint32_t cell_coord_to_decimal(char* out, uint32_t cap, int32_t coord) {
+    const uint32_t bits = static_cast<uint32_t>(coord);
+    uint32_t magnitude = bits;
+    uint32_t off = 0;
+    if ((bits >> 31u) == 1u) {
+        if (off + 1u < cap) {
+            out[off++] = '-';
+        }
+        magnitude = 0u - bits;
+    }
+    char digits[12] = {};
+    uint32_t len = 0;
+    if (magnitude == 0u) {
+        digits[len++] = '0';
+    }
+    while (magnitude > 0u && len < 11u) {
+        digits[len++] = static_cast<char>('0' + (magnitude % 10u));
+        magnitude /= 10u;
+    }
+    while (len > 0u && off + 1u < cap) {
+        out[off++] = digits[--len];
+    }
+    if (off < cap) {
+        out[off] = '\0';
+    }
+    return off;
+}
+
+/**
+ * @brief Read an int32 cell coordinate back from its DECIMAL STRING form
+ * @param text NUL-terminated decimal, optionally signed
+ * @return The coordinate; 0 for an empty or non-numeric buffer
+ *
+ * The exact inverse of cell_coord_to_decimal - the pair is what makes the durable round trip
+ * provable. The magnitude accumulates unsigned so the most negative value survives it.
+ */
+inline int32_t decimal_to_cell_coord(const char* text) {
+    uint32_t at = 0;
+    uint32_t negative = 0;
+    if (text[0] == '-') {
+        negative = 1u;
+        at = 1u;
+    }
+    uint32_t magnitude = 0;
+    for (uint32_t i = at; text[i] >= '0' && text[i] <= '9'; ++i) {
+        magnitude = magnitude * 10u + static_cast<uint32_t>(text[i] - '0');
+    }
+    if (negative == 1u) {
+        return static_cast<int32_t>(0u - magnitude);
+    }
+    return static_cast<int32_t>(magnitude);
 }
 
 // ---------------------------------------------------------------------------
