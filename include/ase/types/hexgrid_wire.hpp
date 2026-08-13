@@ -336,15 +336,34 @@ inline int32_t decimal_to_cell_coord(const char* text) {
 // ---------------------------------------------------------------------------
 
 /**
- * One interaction reported on one lattice cell.
+ * One interaction reported at one place of the world: THE PLACE, THEN WHAT HAPPENED THERE.
+ *
+ * THE PLACE IS CONTINUOUS AND IN METRES, and that is the whole point of this contract. Which
+ * honeycomb, which vertical band and which region a place falls into are DERIVED by the lattice
+ * from the epoch the world currently stands on (geoid_world_axis_to_chunk,
+ * geoid_chunk_axis_to_address, geoid_col_band_of). A producer therefore never discretises, never
+ * carries a scale factor, and never goes stale when the sphere grows a rung.
+ *
+ * IT USED TO CARRY A CHUNK PAIR, AND THAT WAS A CONVERSION IN DISGUISE. A chunk index is already
+ * the result of dividing a world coordinate by the cell edge, so every producer without a chunk
+ * axis of its own would have had to carry that edge - and a length constant in a producer is
+ * exactly the thing the lattice invariant forbids. Measured 2026-08-12: of the systems that hold
+ * a position, only ase-terrain has a chunk axis at all; ase-signature, ase-foodchain and the GIS
+ * raster chain all hold metres. Metres are what they all have, so metres is what the channel takes.
  *
  * weight is a DATA weight, never a type discriminator: how much this interaction counts towards
  * the durable suprastructure change that lifts a marker to a zone (DSGN_019, Z. 97). The producer
  * class is expressed by a tag, so a new class adds a tag and never a field.
+ *
+ * THE VERTICAL IS WHAT MAKES THE CHANNEL GENERIC. Ground, air, the layers below ground, a raster
+ * cell and a flight path all report the same two things - where, and what - and they differ only
+ * in the height they name and the tag they carry. A second channel per domain would be a second
+ * answer to "which honeycomb is this", which is exactly the split this contract exists to prevent.
  */
 struct GisReqCellIntrComponent {
-    int32_t cx = 0;       // cell chunk X of the interaction
-    int32_t cz = 0;       // cell chunk Z of the interaction
+    float pos_x = 0.0f;   // world X of the place, metres
+    float pos_y = 0.0f;   // world height of the place, metres - the axis that names the band
+    float pos_z = 0.0f;   // world Z of the place, metres
     float weight = 0.0f;  // data weight of this interaction, 0 means no contribution
 };
 
@@ -358,6 +377,22 @@ struct GisReqCellIntrPendTag {};
  * trigger class the terrain phase produces.
  */
 struct GisReqCellIntrEdgeTag {};
+
+/**
+ * Producer class: a weather body standing over the cell.
+ *
+ * The air is the SECOND producer on this one channel, and it exists to prove that the channel is
+ * generic rather than a terrain detail wearing a general name. A storm is a thing with a place
+ * and a meaning, exactly like a crossing - it reports metres and a weight, and the lattice does
+ * the rest. Nothing in the wire distinguishes them but this tag.
+ *
+ * WHY THE HEIGHT MATTERS HERE AND NOT ON THE GROUND
+ * A crossing happens where a walker is, so its pos_y is that of the ground. A storm stands ABOVE
+ * the ground, and that is not a nuisance to be flattened away: the vertical band derived from
+ * pos_y is what separates weather from what happens beneath it. The producer therefore reports
+ * the height of the body, never the terrain under it.
+ */
+struct GisReqCellIntrAirTag {};
 
 /**
  * Producer class: a durable suprastructure change inside the cell.

@@ -91,4 +91,31 @@ constexpr uint32_t GEOID_MAX_NEIGHBORS = 6;       // Ring buffer capacity of ONE
  * zur Uebersetzungszeit - ein Array laesst sich nicht aus einem Laufzeitwert dimensionieren.
  */
 
+/**
+ * DER BESITZER EINER ORTSZEILE IM HUB - eine Adressregel, keine Frage-Antwort-Naht
+ *
+ * Der Ort k eines Projekts ist ein Datum, das der World kennt und der Replica beantworten muss:
+ * `ase player spawn --place k` fragt nach der Zelle, auf der Ort k liegt, und der Weg dorthin ist
+ * der Hub (GEO_POI_CX / GEO_POI_CZ). Ein Hub-Wert traegt keine Koordinate, aber er traegt einen
+ * BESITZER - und ein Ort ist durch (Projekt, Ordinal) eindeutig benannt. Genau diese beiden Zahlen
+ * faltet die Regel unten zu dem Besitzer, unter dem der Erzeuger schreibt und der Beantworter
+ * liest.
+ *
+ * SIE STEHT IN LAYER 0, WEIL BEIDE SEITEN SIE BRAUCHEN UND KEINE DIE ANDERE EINSCHLIESSEN DARF:
+ * `modules/ase-geoid` schreibt (World-Tier), `modules/ase-replication` liest (Replica-Tier), und
+ * ein L3-Modul schliesst kein zweites seiner Schicht ein. Eine Adressregel ist das, was Layer 0
+ * tragen KANN - anders als die entity-gebundene Frage, die oben aus genau diesem Grund entfiel:
+ * hier reist keine Koordinate durch L0, nur die Rechenvorschrift fuer eine Zahl.
+ *
+ * Die Faltung ist die klassische Hash-Kombination (Streuung der einen Zahl gegen die andere, statt
+ * eines nackten XOR): ohne sie lieferten Projekt A/Ort 1 und Projekt B/Ort 0 mit benachbarten
+ * Projekt-Hashes systematisch denselben Besitzer, und ein Projekt bekaeme still die Orte eines
+ * anderen. Ein Ordinal ist klein und dicht - gerade dort ist ein nacktes XOR am schwaechsten.
+ */
+constexpr uint32_t GEOID_POI_OWNER_MIX = 0x9E3779B9u;  // Golden-ratio odd word of the fold
+
+constexpr uint32_t geoid_poi_owner(uint32_t proj_hash, uint32_t ordinal) {
+    return proj_hash ^ (ordinal + GEOID_POI_OWNER_MIX + (proj_hash << 6) + (proj_hash >> 2));
+}
+
 }  // namespace ase::types

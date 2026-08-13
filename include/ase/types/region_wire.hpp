@@ -153,6 +153,32 @@ constexpr uint32_t CELL_ZONE_OFF_SECT    = 21u;  // u32 offset of the sector id 
 constexpr uint32_t CELL_STATE_ZONE       = 3u;   // wire code: persistent zone (Replica-side TPLG_CELL_STATE_ZONE)
 constexpr uint32_t CELL_SECT_NONE        = 0u;   // wire code: no sector assigned (Replica-side TPLG_SECT_NONE)
 
+// CONTRACT AMENDMENT 2026-08-10 - DIE BEGANGENE WABE BEKOMMT IHRE SPROSSE.
+//
+// Die Leiter oben nennt bisher nur ihre OBERSTE Stufe, und ihr eigener Kommentar sagt, dass es
+// eine Leiter ist: Sprosse 3 ist die, "at which a cell IS a persistent zone". Was darunter liegt,
+// war unbenannt - und genau dort steht der Zustand, den der Reiter zeigen soll.
+//
+// GEMESSEN 2026-08-10 an der laufenden Flotte: ein echter Spieler wandert seit 33 Minuten ueber
+// die Kugel, der World fuehrt 21 lebende Zellen (GeoidMrkrSystem "21 active"), und im Browser
+// stehen ZELLZEILEN 1. Die Ursache ist kein Fehler in einem der Glieder, sondern ein fehlendes
+// Glied: `GeoidZonePubSystem` sieht ausschliesslich Zellen mit `GeoidZonePndTag`
+// (geoid_zone_pub_sys.cpp:224) und schreibt fest CELL_STATE_ZONE (:262), die Gegenseite weist
+// jeden anderen Code ausdruecklich ab (replica_rcv_sys.cpp:3133). Eine Wabe, die begangen aber
+// noch keine Zone ist, hat damit UEBERHAUPT KEINEN Traeger zum Replica - und sie ist das, was die
+// Spur ausmacht: die Zone waechst erst aus ihr.
+//
+// WARUM KEIN ZWEITER RAHMEN. Frame 122 traegt `state` als FELD. Ein Feld mit genau einem
+// zulaessigen Wert haette niemand vier Byte gekostet, und die Ablehnung anderer Codes ist als
+// eigener Pfad ausgeschrieben - beides sagt, dass die Erweiterung ueber den Code laeuft und nicht
+// ueber eine neue Kennung. Ein eigener Rahmen waere hier die teurere und die unehrlichere Antwort:
+// er wuerde dieselbe Zeile (Region, cx, cz) ein zweites Mal auf die Leitung legen.
+//
+// Die Sprosse ist damit die ERSTE, weil sie das Erste ist, was einer Wabe zustoesst: jemand war
+// da. Alles Weitere - Sektor, Zone - kommt darueber. Der Name sagt die Tatsache, nicht ihre
+// Wirkung: MARK, nicht "besucht" und nicht "Druck".
+constexpr uint32_t CELL_STATE_MARK       = 1u;   // wire code: cell walked and standing, no zone yet (ladder step below CELL_STATE_ZONE)
+
 // Frames 123/124 - RESERVED for the WRLD_LIFE operative lane (audit G1 fix, registered 2026-08-03).
 // ase-pl-wrld-lifecycle had allocated 121/122 against a stale registry note ("highest live id is
 // 120") while 121 (CAP_NODE_STATUS) and 122 (GIS_CELL_ZONE) were already LIVE above - the same
