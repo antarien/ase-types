@@ -4,9 +4,9 @@
  * ASE MODULE TYPES (SSOT)
  *
  * @file        hexgrid_wire.hpp
- * @brief       Frozen hex-lattice seam - chunk-id packing SSOT, hub bit-pattern codec, intent PODs
- * @description The ONE place the planetary hex lattice crosses a module boundary. Three subjects
- *              live here, all fixed by PLAN_ASE_LATTICE_PHASE_00_CONTRACT.md:
+ * @brief       Frozen hex-lattice seam - chunk-id packing SSOT and the hub bit-pattern codec
+ * @description The ONE place the planetary hex lattice crosses a module boundary. Two subjects
+ *              live here, both fixed by PLAN_ASE_LATTICE_PHASE_00_CONTRACT.md:
  *
  *              1. THE CHUNK-ID PACKING (WS-K.4, DECISION D5 option A). The u64 packing of a chunk
  *                 address used to sit in L3 terrain and had been copied twice into L3 gis - an
@@ -26,15 +26,25 @@
  *                 above 2^24 would come back corrupt. The codec moves the BIT PATTERN, never the
  *                 number, so producer and consumer agree byte for byte.
  *
- *              3. THE INTENT PODS (WS-K.2b). The cell-interaction channel and the project
- *                 spawn-cell request. A producer module emplaces the POD on a request entity, the
- *                 consumer module iterates a View over a type whose definition sits BELOW both -
- *                 no L3-to-L3 include, and Layer 0 stays ECS-free because only the POD and the
- *                 empty tags live here (emplace/View usage is L3/L4 only). Precedent: the
- *                 CapacityReqXmitComponent / CapacityReq*Tag pair in region_wire.hpp.
+ *              THE INTENT POD THAT STOOD HERE AS SUBJECT 3 IS GONE. It was
+ *              `GisReqProjSpwnComponent` plus `GisReqProjSpwnPendTag`, the project spawn-cell
+ *              request, argued in as "POD in Layer 0, emplace and View in L3". The argument never
+ *              applied, and the measurement says why: BOTH ends of that request are systems of
+ *              ase-geoid (GeoidSpwnAskSystem writes it, GeoidSpwnSystem drains it). There was no
+ *              L3-to-L3 seam to bridge - no second module, no second tier, no second process. What
+ *              Layer 0 carried was a plain module component, and it carried it INVISIBLY: the
+ *              structure validator does not reach this layer and `foundation/` has no
+ *              `codegen.json`, so the row could never be transpiled and never reached becsy. Both
+ *              gates read empty at once. The pair now lives as `GeoidReqSpwnComponent` and
+ *              `GeoidReqSpwnPendTag` in modules/ase-geoid, where its two systems already sat.
  *
- *              region_wire.hpp is UNTOUCHED by this plan - the lattice seam is a new header in the
- *              same L0 module, so there is no wire frame and no contract amendment (WS-K.5).
+ *              WHAT THIS HEADER MAY STILL CARRY. A packing rule and a codec - a way to COMPUTE a
+ *              number, never an ECS type and never a datum between two modules of one tier. A
+ *              place in particular does not travel through Layer 0: ase-terrain and ase-geoid are
+ *              both L3 in the World tier and share one registry, so a POD between them is a direct
+ *              channel past the middle of the star (ARCH_ASE_HUB.md, Star Schema). The geodetic
+ *              place plus its meta ride GEO_POS_LAT_DEG / GEO_POS_LON_DEG / GEO_POS_ALT_M /
+ *              GEO_POS_META under the reporting entity as owner.
  *
  *              Import via:
  *                #include <ase/types/hexgrid_wire.hpp>
@@ -43,8 +53,8 @@
  * @module      ase-types
  * @layer       0 (Foundation)
  * @created     2026-07-31
- * @modified    2026-08-04
- * @version     1.1.0
+ * @modified    2026-08-14
+ * @version     1.2.0
  *
  * ECS TYPES COMPLIANCE
  *
@@ -321,106 +331,19 @@ inline int32_t decimal_to_cell_coord(const char* text) {
     return static_cast<int32_t>(magnitude);
 }
 
-// ---------------------------------------------------------------------------
-// CELL INTERACTION CHANNEL (frozen, WS-K.2b)
-//
-// One request entity per interaction. The producer creates it on
-// Schedule::Production; the consumer drains it on Schedule::Integration of the
-// following frame and is the ONLY party that destroys it. Nobody mutates a
-// foreign request.
-//
-// There is deliberately NO owner: the cell address travels as two int32 IN the
-// payload. That is what dissolves the coordinate-owner ban of
-// PLAN_ASE_COMPUTE.md:326 instead of working around it - no hash, no u32
-// truncation, no f32 mantissa cliff.
-// ---------------------------------------------------------------------------
-
-/**
- * One interaction reported at one place of the world: THE PLACE, THEN WHAT HAPPENED THERE.
+/* THE PROJECT SPAWN-CELL REQUEST STOOD HERE. IT IS NOW A MODULE ROW.
  *
- * THE PLACE IS CONTINUOUS AND IN METRES, and that is the whole point of this contract. Which
- * honeycomb, which vertical band and which region a place falls into are DERIVED by the lattice
- * from the epoch the world currently stands on (geoid_world_axis_to_chunk,
- * geoid_chunk_axis_to_address, geoid_col_band_of). A producer therefore never discretises, never
- * carries a scale factor, and never goes stale when the sphere grows a rung.
+ * It was `GisReqProjSpwnComponent` plus `GisReqProjSpwnPendTag` (Master DECISION D4, link 1 of the
+ * genesis chain), placed under the discipline "POD plus tag in L0, emplace and View in L3".
  *
- * IT USED TO CARRY A CHUNK PAIR, AND THAT WAS A CONVERSION IN DISGUISE. A chunk index is already
- * the result of dividing a world coordinate by the cell edge, so every producer without a chunk
- * axis of its own would have had to carry that edge - and a length constant in a producer is
- * exactly the thing the lattice invariant forbids. Measured 2026-08-12: of the systems that hold
- * a position, only ase-terrain has a chunk axis at all; ase-signature, ase-foodchain and the GIS
- * raster chain all hold metres. Metres are what they all have, so metres is what the channel takes.
+ * That discipline answers an L3-to-L3 seam, and there was none: GeoidSpwnAskSystem writes the
+ * request and GeoidSpwnSystem drains it, both in modules/ase-geoid. The pair lives there now as
+ * `GeoidReqSpwnComponent` (components/request/) and `GeoidReqSpwnPendTag` (components/tag/), and
+ * the prefix follows the owner - `Gis` was the leftover of the time the asking side lived in
+ * ase-gis, which has not named this type since.
  *
- * weight is a DATA weight, never a type discriminator: how much this interaction counts towards
- * the durable suprastructure change that lifts a marker to a zone (DSGN_019, Z. 97). The producer
- * class is expressed by a tag, so a new class adds a tag and never a field.
- *
- * THE VERTICAL IS WHAT MAKES THE CHANNEL GENERIC. Ground, air, the layers below ground, a raster
- * cell and a flight path all report the same two things - where, and what - and they differ only
- * in the height they name and the tag they carry. A second channel per domain would be a second
- * answer to "which honeycomb is this", which is exactly the split this contract exists to prevent.
- */
-struct GisReqCellIntrComponent {
-    float pos_x = 0.0f;   // world X of the place, metres
-    float pos_y = 0.0f;   // world height of the place, metres - the axis that names the band
-    float pos_z = 0.0f;   // world Z of the place, metres
-    float weight = 0.0f;  // data weight of this interaction, 0 means no contribution
-};
-
-/** The request is pending: written by the producer, cleared by the consumer destroying the entity. */
-struct GisReqCellIntrPendTag {};
-
-/**
- * Producer class: an edge-face crossing into the cell.
- *
- * The transition between play zones is detected on the edge faces (DSGN_019, Z. 86) - this is the
- * trigger class the terrain phase produces.
- */
-struct GisReqCellIntrEdgeTag {};
-
-/**
- * Producer class: a weather body standing over the cell.
- *
- * The air is the SECOND producer on this one channel, and it exists to prove that the channel is
- * generic rather than a terrain detail wearing a general name. A storm is a thing with a place
- * and a meaning, exactly like a crossing - it reports metres and a weight, and the lattice does
- * the rest. Nothing in the wire distinguishes them but this tag.
- *
- * WHY THE HEIGHT MATTERS HERE AND NOT ON THE GROUND
- * A crossing happens where a walker is, so its pos_y is that of the ground. A storm stands ABOVE
- * the ground, and that is not a nuisance to be flattened away: the vertical band derived from
- * pos_y is what separates weather from what happens beneath it. The producer therefore reports
- * the height of the body, never the terrain under it.
- */
-struct GisReqCellIntrAirTag {};
-
-/**
- * Producer class: a durable suprastructure change inside the cell.
- *
- * Only a lasting change of the suprastructure carries a cell beyond the resting-place case into
- * persistence (DSGN_019, Z. 97).
- */
-struct GisReqCellIntrSupraTag {};
-
-// ---------------------------------------------------------------------------
-// PROJECT SPAWN-CELL REQUEST (Master DECISION D4, link 1 of the genesis chain)
-//
-// A project's spawn cell is derived deterministically from its proj_hash, so the
-// request carries nothing but the project label. Same carrier discipline as the
-// interaction channel: POD plus tag in L0, emplace and View in L3.
-// ---------------------------------------------------------------------------
-
-/**
- * One project that wants its genesis spawn cell resolved.
- *
- * proj_hash is the FNV-1a32 of the project id - the same label the CAP_PROJ_* hub family already
- * uses as its owner, so the resolved cell is published under an owner the bridge already knows.
- */
-struct GisReqProjSpwnComponent {
-    uint32_t proj_hash = 0u;  // FNV-1a32(proj_id), 0 means unset
-};
-
-/** The spawn-cell request is pending: written by the producer, cleared by the consumer. */
-struct GisReqProjSpwnPendTag {};
+ * A tag IS an ECS component. Layer 0 is defined as free of ECS dependency, so neither the payload
+ * nor the marker could stay: they were unreachable for `codegen.json` and invisible to the
+ * structure validator at the same time. */
 
 }  // namespace ase::types

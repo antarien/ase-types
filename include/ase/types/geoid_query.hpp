@@ -4,30 +4,38 @@
  * ASE Layer 0 POD - Lattice Query Seam
  *
  * @file        geoid_query.hpp
- * @brief       The PODs two Layer 3 modules share to ask the planetary lattice a question
+ * @brief       The address rule of the lattice - a buffer capacity and an owner fold, no ECS
  * @description `modules/ase-geoid` owns the planetary hexagon lattice, and other Layer 3 modules
  *              need its answers. A Layer 3 module must never include another Layer 3 module
  *              (WRFL_ASE_MODULE_DEPENDENCIES.md, Section 3), and a Hub key cannot carry a cell
  *              address either - the Hub value is a float and its owner may not be a coordinate
- *              (PLAN_ASE_COMPUTE.md:246, :326). The one carrier that stays inside the layer rule
- *              is a POD whose TYPE lives HERE, below both modules: the consumer emplaces the
- *              question, `ase-geoid` emplaces the answer on the same entity, and both include
- *              downward only. That is the established pattern of `region_wire.hpp`, where
- *              `ase-capacity` and `ase-pl-capacity-orch` meet the same way.
+ *              (PLAN_ASE_COMPUTE.md:246, :326).
  *
- *              NO ECS HERE. These are plain structs plus empty tags - no registry, no EnTT, no
- *              behaviour. Layer 0 stays ECS free; the ECS meaning is given by the modules that
- *              emplace them.
+ *              WHAT LAYER 0 CAN CARRY HERE, AND WHAT IT CANNOT. It cannot carry a DATUM between
+ *              two Layer 3 modules of the same tier - the seven question and answer PODs that
+ *              tried are documented below, and they fell away with the module boundary that made
+ *              them necessary. It cannot carry the NAME OF A CLASS either: an empty tag IS an ECS
+ *              component, and the three that stood here have moved to their owner module (note
+ *              below). What it CAN carry is a rule for computing a number - `geoid_poi_owner`
+ *              folds (project, ordinal) into a Hub owner, and that fold crosses a real TIER
+ *              boundary: the World writes GEO_POIS_CX/CZ under it (geoid_pois_pub_sys.cpp:235)
+ *              and the Replica reads them back (replica_cap_push_sys.cpp:604). Two processes,
+ *              two registries, no shared Hub - which is exactly what Layer 0 exists for.
+ *
+ *              NO ECS HERE. What remains is a constant and a fold - no registry, no EnTT, no
+ *              component, no tag, no behaviour. Layer 0 stays ECS free.
  *
  *              THE ADDRESS IS THE CHUNK ADDRESS. (cx,cz) as int32 is the cell address of Master
- *              binding decision 1, and there is no second cell id world. The address travels in
- *              the PAYLOAD of these PODs, never as an owner hash.
+ *              binding decision 1, and there is no second cell id world. It is DERIVED from the
+ *              place with the running rung and never travels: neither through this header nor
+ *              beside a place, because a stored address is a second truth that the next epoch
+ *              change makes wrong.
  *
  * @module      ase-types
  * @layer       0 (Foundation)
  * @created     2026-08-06
- * @modified    2026-08-06
- * @version     1.0.0
+ * @modified    2026-08-14
+ * @version     1.2.0
  *
  * DRY / SOLID / SSOT COMPLIANCE:
  * - NO ECS: no registry, no EnTT, no component behaviour in this header
@@ -117,5 +125,27 @@ constexpr uint32_t GEOID_POI_OWNER_MIX = 0x9E3779B9u;  // Golden-ratio odd word 
 constexpr uint32_t geoid_poi_owner(uint32_t proj_hash, uint32_t ordinal) {
     return proj_hash ^ (ordinal + GEOID_POI_OWNER_MIX + (proj_hash << 6) + (proj_hash >> 2));
 }
+
+/* DIE KLASSEN EINER ORTSMELDUNG UND DIE ORTSANFRAGE STEHEN NICHT MEHR HIER.
+ *
+ * Es waren `GeoidReqIntrPendTag`, `GeoidReqIntrEdgeTag` und `GeoidReqLocTag`. Sie liegen jetzt
+ * neben `GeoidReqIntrAirTag` und `GeoidReqIntrSprTag` in
+ * `modules/ase-geoid/include/ase/geoid/components/tag/`, wo das Gitter seine uebrigen Tags fuehrt.
+ *
+ * DER GRUND IST DERSELBE, DER DIE BEIDEN ANDEREN SCHON BEWEGT HAT, UND ER GALT IMMER FUER ALLE
+ * FUENF. Der Text, der hier stand, argumentierte die Platzierung selbst weg: ein LEERER Tag trage
+ * nur den NAMEN einer Klasse und kein Datum, also duerfe er unter den Modulen sitzen. Das gilt fuer
+ * eine Formel und bricht bei einem Tag. Ein Tag IST eine ECS-Komponente - er wird emplaced, er
+ * filtert eine View, er hat eine Lebenszeit an einer Entitaet. Layer 0 ist als frei von
+ * ECS-Abhaengigkeit definiert.
+ *
+ * WARUM ES SO LANGE UNBEMERKT BLIEB, IST DIE EIGENTLICHE LEHRE: beide Tore lesen hier gleichzeitig
+ * leer. `foundation/` traegt keine `codegen.json`, ist also paritaetsunfaehig und erreicht becsy
+ * nie; und der Struktur-Validator greift in dieser Schicht nicht. Kein Build meldet etwas, nichts
+ * wird rot, und die Sache sieht sauber aus.
+ *
+ * KEIN VERBRAUCHER VERLOR DABEI ETWAS. Der Terrain-Erzeuger setzt keinen fremden Tag mehr, sondern
+ * stellt seine Tatsache als Wert unter GLOBAL fest (TER_CROSS_*); das Gitter spiegelt sie in seine
+ * EIGENE Inp-Komponente und hebt daraus seine EIGENEN Tags. Der Stern hat wieder eine Mitte. */
 
 }  // namespace ase::types

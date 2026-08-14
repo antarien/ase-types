@@ -259,6 +259,88 @@ constexpr const char* MOD_GRP_LOAD_KEYS[MOD_GRP_COUNT] = {
     "CAP_RGN_LOAD_ENVR",  // MOD_GRP_ENVR
 };
 
+// Per-group outbound-delta counter key STEMS, the same shape one axis further: the egress RATE of a
+// region per group is differenced from its <STEM>_HI / <STEM>_LO pair under the UNCHANGED region_id
+// owner. The group rides in the value_id NAMESPACE here too, which is what let the shared counter
+// COMPONENT go: it lived in this header as RegionGrpDltComponent, keyed by (region_id, grp_id), and
+// was written by ase-terrain while ase-world differenced and destroyed it - two L3 modules of the
+// SAME World process reaching into one row below both, where no validator and no codegen.json can
+// see it. The producing module now keeps its own counter and STATES it; the consumer keeps a cursor
+// of its own.
+//
+// A STEM, NOT A KEY, AND THE HALVES ARE NOT OPTIONAL. A count is a u32 and the hub value slot is
+// f32: above 2^24 a whole number stops being representable and increments vanish silently, while a
+// raw 32-bit pattern in the slot can come out NEGATIVE - which is_not_found (v <= FloatNotFound)
+// reads as ABSENT. So each end appends _HI and _LO and moves two non-negative halves below 65536,
+// the ENG_PROJ_HASH_HI/LO house pattern and mirror condition A7 above. Reading one half alone is a
+// rate that jumps by 65536.
+//
+// A group whose plane ships no deltas has an EMPTY stem here, its values never exist, and the rate
+// honestly reads 0 - the same honest zero the old contract promised, now by absence (NOT_FOUND)
+// instead of by an unincremented field. A plane that starts shipping fills its slot. Every filled
+// half is registered in hub_metrics.json BEFORE any hub::set, exactly like the load keys.
+constexpr const char* MOD_GRP_DLT_KEYS[MOD_GRP_COUNT] = {
+    "",                 // MOD_GRP_KERN - infrastructure plane, ships no region deltas
+    "TER_RGN_DLT_CNT",  // MOD_GRP_TERR - TerrainDltRgnPubSystem states _HI/_LO per shipped delta
+    "",                 // MOD_GRP_ENTV - no egress attribution seam yet
+    "",                 // MOD_GRP_ENVR - no egress attribution seam yet
+};
+
+/** Bits one half of a delta-counter pair carries (the u32 splits into two of these). */
+constexpr uint32_t RGN_DLT_HALF_BITS = 16u;
+
+/** Mask of one half of a delta-counter pair. */
+constexpr uint32_t RGN_DLT_HALF_MASK = 0xFFFFu;
+
+/** Upper half of a delta count, as the non-negative float its hub slot carries. */
+constexpr float rgn_dlt_hi(uint32_t count) {
+    return static_cast<float>((count >> RGN_DLT_HALF_BITS) & RGN_DLT_HALF_MASK);
+}
+
+/** Lower half of a delta count, as the non-negative float its hub slot carries. */
+constexpr float rgn_dlt_lo(uint32_t count) {
+    return static_cast<float>(count & RGN_DLT_HALF_MASK);
+}
+
+/** Rejoin the two halves a consumer read back into the u32 count the producer stated. */
+constexpr uint32_t rgn_dlt_join(float hi, float lo) {
+    return ((static_cast<uint32_t>(hi) & RGN_DLT_HALF_MASK) << RGN_DLT_HALF_BITS)
+         | (static_cast<uint32_t>(lo) & RGN_DLT_HALF_MASK);
+}
+
+// ---------------------------------------------------------------------------
+// GROUP-MASK ON THE HUB - one key, and a ceiling the compiler enforces.
+//
+// A group subset is a bit set over the dense group registry above. It rides the
+// hub as ONE non-negative value, not as halves, because it is small: with
+// MOD_GRP_COUNT groups the mask never exceeds 2^MOD_GRP_COUNT - 1, and the f32
+// value slot represents every whole number below 2^24 exactly.
+//
+// THE CLIFF IS A COMPILE ERROR, NOT A SURPRISE. The registry is documented to
+// grow ("next amendment appends 4"). At 25 groups the mask would cross 2^24 and
+// start losing its high bits SILENTLY - a subset that quietly forgets a plane is
+// worse than one that never travelled. The static_assert below turns that day
+// into a build failure with this comment attached, so whoever appends the 25th
+// group splits the key into halves the way rgn_dlt_hi/lo already do.
+// ---------------------------------------------------------------------------
+
+/** Highest group count whose full mask still fits a hub value slot without loss. */
+constexpr uint32_t GRP_MASK_HUB_MAX_GROUPS = 24u;
+
+static_assert(MOD_GRP_COUNT <= GRP_MASK_HUB_MAX_GROUPS,
+              "group mask no longer fits an f32 hub value exactly - split it into "
+              "HI/LO halves like rgn_dlt_hi/rgn_dlt_lo before appending the group");
+
+/** A group subset as the non-negative float its hub slot carries. */
+constexpr float grp_mask_to_hub(uint64_t mask) {
+    return static_cast<float>(mask & ((1ull << MOD_GRP_COUNT) - 1ull));
+}
+
+/** The group subset a consumer read back, as the bit set the producer stated. */
+constexpr uint64_t hub_to_grp_mask(float value) {
+    return static_cast<uint64_t>(value) & ((1ull << MOD_GRP_COUNT) - 1ull);
+}
+
 /** Exact string equality - L0 stays std::-free, so the two-pointer walk lives here. */
 constexpr bool mod_grp_name_eq(const char* a, const char* b) {
     uint32_t i = 0u;
@@ -477,27 +559,32 @@ constexpr bool chunk_in_region(int32_t cx, int32_t cz,
     return cx >= cx0 && cx < cx1 && cz >= cz0 && cz < cz1;
 }
 
-/**
- * RegionGrpDltComponent - per-(region, module-group) outbound-delta counter (World-local).
+/* DER GRUPPEN-DELTA-ZAEHLER STAND HIER ALS KOMPONENTE. ER IST JETZT EIN WERT.
  *
- * CONTRACT AMENDMENT 2026-08-03 (PLAN_ASE_COMPUTE_MOD_AXIS.md T3): the group axis needs the
- * outbound-delta rate PER GROUP, and the producer of a delta is not the module that owns the
- * region rows - the terrain egress (ase-terrain, frame 106/SNAP staging) attributes its staged
- * deltas to MOD_GRP_TERR at its region gate, while the consumer (the World group-load system,
- * ase-world) differences the counter. Two L3 modules never include each other, so the row is an
- * L0 POD - the exact region_wire seam RegionRect already rides in the same egress loop.
+ * Es war `RegionGrpDltComponent` mit (region_id, grp_id, dlt_count, dlt_seen), eingefuehrt am
+ * 2026-08-03 (PLAN_ASE_COMPUTE_MOD_AXIS.md T3) mit der Begruendung: der Erzeuger eines Deltas ist
+ * nicht das Modul, dem die Regionszeilen gehoeren - ase-terrain zaehlt am Regions-Gate hoch,
+ * ase-world bildet die Differenz -, und zwei L3-Module schliessen einander nie ein, also gehoert
+ * die Zeile als POD unter beide.
  *
- * Counter discipline mirrors WorldCchRgnDltComponent: dlt_count only ever grows (producer-owned),
- * dlt_seen is the consumer's sample cursor. u32 wrap is harmless - the consumer differences.
- * Producers of the other groups join at their own egress attribution seams by amendment; a group
- * without a producer keeps count 0 and its rate honestly reads 0.
- */
-struct RegionGrpDltComponent {
-    uint32_t region_id = 0;  // join axis 1 (REGION_ID_NONE when unset)
-    uint32_t grp_id = 0;     // join axis 2 (dense module-group id, registry above)
-    uint32_t dlt_count = 0;  // running count of outbound deltas this group staged for this region (grows only)
-    uint32_t dlt_seen = 0;   // consumer cursor: last sampled dlt_count
-};
+ * DIE PRAEMISSE STIMMT, DIE FOLGERUNG STIMMTE NICHT. Beide Module werden in DENSELBEN
+ * World-Prozess gebaut und teilen EINE Registry (servers/ase-server-world/CMakeLists.txt:165 und
+ * :198). Damit war die geteilte Zeile nie eine Tier-Naht, sondern derselbe Direktkanal eine
+ * Schicht tiefer: der Stern bekam eine Sehne, und die Mitte wusste nichts davon. Sichtbar wurde es
+ * lange nicht, weil hier beide Tore gleichzeitig leer lesen - `foundation/` traegt keine
+ * `codegen.json` und der Struktur-Validator greift in dieser Schicht nicht.
+ *
+ * WIE WEIT DIE NAHT REICHTE, ZEIGT DAS FELD `dlt_seen`: es war der Zaehlerstand des LESERS,
+ * gefuehrt in der Zeile des SCHREIBERS. Zwei Leser teilten sich dieses eine Feld und brauchten
+ * einen Kommentar, damit der zweite es nicht anfasst; und der Leser zerstoerte am Ende die Zeile
+ * des Schreibers, sobald die Region ging.
+ *
+ * WAS AN SEINE STELLE TRAT: der Erzeuger fuehrt seinen EIGENEN Zaehler
+ * (terrain::TerrainStaRgnDltComponent) und stellt ihn als WERT unter der Region als Besitzer fest;
+ * der Verbraucher spiegelt ihn in seine EIGENE Zeile (world::WorldInpGrpDltComponent) und fuehrt
+ * seinen EIGENEN Zaehlerstand. Die Gruppenachse steht im NAMEN des Schluessels - MOD_GRP_DLT_KEYS
+ * oben -, genau wie MOD_GRP_LOAD_KEYS sie fuer den Lastvektor traegt. Was hier bleibt, ist die
+ * Namenstabelle und die Halbierungsregel: Rechenvorschriften, keine ECS-Typen. */
 
 // ---------------------------------------------------------------------------
 // ChunkSnapEntry - the full-fidelity per-chunk terrain slice (SNAP_PAGE payload).
@@ -673,60 +760,77 @@ constexpr uint32_t ENTITY_SNAP_OFF_EPOCH     = 6u;   // u32 per-entity monotonic
 constexpr uint32_t ENTITY_SNAP_OFF_COMP_CNT  = 10u;  // u16 number of TLV component blocks that follow
 constexpr uint32_t ENTITY_SNAP_TLV_HDR_SZ    = 4u;   // per block: type_id(2) + len(2), then len payload bytes
 
-// ---------------------------------------------------------------------------
-// Capacity intent PODs - the capacity scheduler's decision handed to the
-// orchestration plane. Plain data at L0 so both the deciding module (ase-capacity,
-// L3/Engine) and the acting plugin (ase-pl-cap-orch, L4/Engine) share ONE
-// definition; the Tag structs carry no data and select the intent kind, so no
-// type-discriminator field is ever needed.
-// ---------------------------------------------------------------------------
+/* DIE REGION-INTENTS STANDEN HIER ALS ACHT ECS-TYPEN. SIE SIND JETZT EINE ZUSTELLUNG.
+ *
+ * Es waren `CapacityReqXmitComponent`, die sechs Klassen-Tags `CapacityReqSplitTag`,
+ * `CapacityReqMergeTag`, `CapacityReqRebalanceTag`, `CapacityReqSpawnTag`, `CapacityReqAssignTag`,
+ * `CapacityReqRetireTag` und die Nutzlast `CapacityReqSpwnComponent`. Die Begruendung stand
+ * woertlich darueber: ase-capacity (L3) und ase-pl-capacity-orch (L4) fassen sie beide an, und ein
+ * L4-Plugin schliesst nie ein L3-Modul ein, also sei diese Schicht das einzige legale gemeinsame
+ * Zuhause.
+ *
+ * DIE PRAEMISSE STIMMT, DIE FOLGERUNG STIMMTE NICHT. Beide werden in DENSELBEN Engine-Prozess
+ * gebaut und teilen EINE Registry (servers/ase-server-engine/CMakeLists.txt:133 und :142). Die
+ * geteilte Zeile war also nie eine Tier-Naht, sondern eine Sehne quer durch den Stern: der
+ * Scheduler legte eine Entity an, das Plugin las sie, haengte weitere Tags um und ZERSTOERTE sie.
+ * Unbemerkt blieb es, weil hier beide Tore leer lesen - `foundation/` traegt keine `codegen.json`,
+ * und der Struktur-Validator greift in dieser Schicht nicht.
+ *
+ * WARUM AN IHRE STELLE KEIN HUB-WERT TRAT, anders als bei den Nachbarbefunden in dieser Datei.
+ * Zwei gemessene Gruende, und jeder allein genuegt:
+ *   - DIE ZEICHENKETTE. Die Zuweisung braucht den project_id STRING (Vault-Pfad des
+ *     Knoten-Tokens), und proj_hash ist ein einwegiger FNV32. Der Wertraum des Hubs ist float32 -
+ *     ein Name passt dort nicht, und ihn als Zahlenhalbwerte zu kodieren waere ein selbstgebauter
+ *     String-Ersatzkanal am Hub.
+ *   - DIE VIELZAHL. `capacity_rcn_splt_sys.cpp` laeuft ueber ALLE heissen Projekte und erhebt
+ *     mehrere Intents in EINEM Tick. Ein Hub-Wert ist ein EINZELNER stehender Slot: der zweite
+ *     Intent desselben Ticks ueberschriebe den ersten still. Der Stern traegt stehende TATSACHEN,
+ *     eine Zustellung traegt er nicht.
+ *
+ * WAS AN IHRE STELLE TRAT: eine typisierte Zustellung mit Zuhause in ase-hub - der MITTE des
+ * Sterns, die BEIDE Tore sieht (gemessen 2026-08-14: Struktur-Validator 172 Dateien / 0 Verstoesse,
+ * Paritaet Phase A generiert, 90 Components entschieden). Hier in Layer 0 greift KEINES der beiden.
+ * `hub::HubCapXmitReqComponent` traegt die Bewegung,
+ * `hub::HubCapSpwnReqComponent` die Nutzlast, und sechs Klassen-Tags `hub::HubCapReqSplt/Mrge/
+ * Blnc/Spwn/Asgn/RetrTag` sagen, welche Klasse es ist - die Klasse bleibt ein TAG und wird nie ein
+ * Zahlenfeld. Das Plugin nimmt sie ueber sechs SDK-Aufrufe `sdk::take_capacity_*_request()`, die
+ * die Zeile kopieren und im selben Schritt entfernen, und legt sie auf EIGENE Zeilen
+ * (`CapacityOrchInpXmitComponent`, `CapacityOrchReqSpwnComponent`, eigene Klassen-Tags). Es
+ * inkludiert dabei weder ase/capacity noch ase/hub. Praezedenzfall im Bestand:
+ * HubCapNodeAdopComponent samt modules/ase-sdk/src/api/sdk_capacity_adopt.cpp.
+ *
+ * WAS HIER BLEIBT: `RegionRect` - ein echter Draht-POD, den World und Replica auf Frame 93 teilen,
+ * und der auf der Zustellung nur mitfaehrt. */
 
-/** One region-movement intent: which region moves from which node to which node, for which project. */
-struct CapacityReqXmitComponent {
-    uint32_t region_id = 0;  // REGION_ID_NONE until the scheduler picked the region
-    uint32_t from_node = 0;  // node id giving the region up (0 = none, e.g. a fresh spawn)
-    uint32_t to_node = 0;    // node id taking the region over (0 = still to be spawned)
-    uint32_t proj_hash = 0;  // owning project (entt::hashed_string value of the project id)
-    uint32_t epoch = 0;      // monotonic intent epoch, so a stale intent is dropped not replayed
-};
+/* DIE RELINQUISH-KLASSE STAND HIER UND WAR NIE GETEILT.
+ *
+ * `CapacityReqRelinquishTag` lag zwischen den sechs uebrigen Intent-Klassen, unter derselben
+ * Begruendung: ase-capacity (L3) und ase-pl-capacity-orch (L4) teilen sich die Klassen, und ein
+ * L4-Plugin schliesst nie ein L3-Modul ein. Fuer DIESE Klasse traf das nie zu - gemessen hat der
+ * Tag repo-weit genau zwei Nutzer, und BEIDE sind Systeme des Plugins: der Teardown
+ * (capacity_orch_prj_del_sys.cpp) hebt ihn, der Relinquish-Drain
+ * (capacity_orch_req_rels_sys.cpp) verbraucht ihn. Kein Scheduler nennt ihn je.
+ *
+ * Er liegt jetzt als `CapacityOrchReqRelsTag` im Plugin. Ein Tag IST eine ECS-Komponente; Layer 0
+ * ist als frei von ECS definiert und traegt keine `codegen.json` - beide Tore lasen hier
+ * gleichzeitig leer, weshalb ein rein plugin-interner Marker so lange im Fundament der Engine
+ * sitzen konnte. */
 
-struct CapacityReqSplitTag {};       // split the region into smaller ones (load above the band)
-struct CapacityReqMergeTag {};       // merge neighbouring regions back together (load below the band)
-struct CapacityReqRebalanceTag {};   // move the region to a less loaded node, geometry unchanged
-struct CapacityReqSpawnTag {};       // a new node is needed before the region can be assigned
-struct CapacityReqRelinquishTag {};  // the region is given up entirely (project teardown / merge tail)
-
-// CONTRACT AMENDMENT 2026-07-31 (PLAN_ASE_LATTICE_PHASE_04_CAP WS-C.1). A SIXTH intent class, added
-// under the same precedent as the five tags above. The Genesis rule creates the FIRST region of a
-// project and hands it to a World node that is ALREADY live - no node may be spawned for it. None of
-// the five classes above carries that meaning, measured at their drains: CapacityReqSplitTag turns
-// into a spawn whenever to_node is 0 (capacity_orch_req_splt_sys.cpp:291-292), CapacityReqSpawnTag
-// reserves a fresh port and node id unconditionally (capacity_orch_req_spwn_sys.cpp:306-336), and
-// CapacityReqRebalanceTag DROPS an intent whose to_node is 0 (capacity_orch_req_blnc_sys.cpp). The
-// scheduler never names a node - "to_node stays zero on purpose", capacity_rcn_blnc_sys.cpp EMIT
-// PASS - so reusing any of them would spawn a second node while the node the FLOOR rule just
-// provided sits idle. Frame 93 stays untouched (versionless, one-rect): this is an empty Tag, not a
-// wire change; the class it selects is drained onto the EXISTING assign path.
-struct CapacityReqAssignTag {};      // give an already-created region to an already-live node (no spawn)
-
-// CONTRACT AMENDMENT 2026-08-02 (Task 14 scale-in). A SEVENTH intent class, added under the same
-// precedent as the six tags above. The surplus rule (capacity_rcn_srpl_sys.cpp) is the reverse of
-// FLOOR: it retires ONE running, region-less World instance of a project that owns more instances
-// than its target justifies - measured live 2026-08-02, two FLOOR-ordered instances (9100/9102)
-// sat idle with no rule to take them back and had to be stopped by hand. None of the six classes
-// above carries that meaning, measured at their drains: CapacityReqSplitTag turns into a spawn
-// whenever to_node is 0 (capacity_orch_req_splt_sys.cpp:291-292), CapacityReqSpawnTag turns every
-// drained intent into a fresh port + node id reservation (capacity_orch_req_spwn_sys.cpp, reserve
-// pass), CapacityReqRebalanceTag DROPS a targetless intent (capacity_orch_req_blnc_sys.cpp),
-// CapacityReqMergeTag moves regions between running nodes (capacity_orch_req_mrge_sys.cpp), and
-// CapacityReqRelinquishTag gives up a REGION over frame 94 (capacity_orch_req_rels_sys.cpp) -
-// every one of them is REGION-directed and none stops an instance. This class is INSTANCE-directed
-// and never reaches the wire: the drain (capacity_orch_req_retr_sys.cpp) stops the unit through
-// the launcher seam and walks the existing death ladder (DeadTag + retire sweep + token drop-in
-// removal), so no frame id is allocated and frame 93/94 stay untouched. Which instance dies is
-// orchestration state, not scheduler state - the intent names only the project, exactly as the
-// FLOOR spawn intent names no node.
-struct CapacityReqRetireTag {};      // retire one surplus region-less instance (stop unit via seam, death ladder)
+/* DIE GENESIS- UND DIE RUECKNAHME-KLASSE STANDEN HIER, mit je einer eigenen Vertragsergaenzung.
+ *
+ * `CapacityReqAssignTag` (2026-07-31, PLAN_ASE_LATTICE_PHASE_04_CAP WS-C.1) gibt eine bereits
+ * erzeugte Region an einen bereits LAUFENDEN Knoten, ohne eine Maschine zu bestellen.
+ * `CapacityReqRetireTag` (2026-08-02, Task 14 scale-in) nimmt EINE laufende, regionslose Instanz
+ * zurueck - live gemessen standen zwei FLOOR-bestellte Instanzen (9100/9102) ohne Region da, keine
+ * Regel nahm sie zurueck, und sie mussten von Hand gestoppt werden.
+ *
+ * BEIDE BEGRUENDUNGEN, WARUM SIE EIGENE KLASSEN SIND, GELTEN WEITER und stehen jetzt bei den Tags,
+ * die sie ersetzt haben: `hub::HubCapReqAsgnTag` und `hub::HubCapReqRetrTag`. Was NICHT weiter
+ * galt, war ihr Zuhause - siehe den Befund ueber `CapacityReqXmitComponent` oben: Modul und Plugin
+ * teilen EINEN Prozess und EINE Registry, die geteilte Zeile war nie eine Tier-Naht, und in dieser
+ * Schicht lesen Paritaet und Struktur-Validator gleichzeitig leer.
+ *
+ * Frame 93 und 94 bleiben unberuehrt: es waren leere Tags, keine Draht-Aenderung. */
 
 // CONTRACT AMENDMENT 2026-08-03 (module axis, PLAN_ASE_COMPUTE_MOD_AXIS.md T3/T4). The EIGHTH and
 // NINTH intent classes, added under the same precedent as the seven above - and a GROUP intent POD
@@ -737,85 +841,88 @@ struct CapacityReqRetireTag {};      // retire one surplus region-less instance 
 // reverses it when the dominance decayed below the hysteresis floor. Both are GROUP-directed:
 // the assignment unit is the causality GROUP, never the single module.
 
-/** One group-subset movement intent: which groups of a region move from which node to which node. */
-struct CapacityReqGrpXmitComponent {
-    uint32_t region_id = 0;  // REGION_ID_NONE until the scheduler picked the region
-    uint32_t from_node = 0;  // node id giving the group subset up (the current holder)
-    uint32_t to_node = 0;    // node id taking the subset over (0 = drain refuses, BLNC discipline)
-    uint64_t grp_mask = 0;   // group subset that moves (mod_grp_bit set over the dense registry)
-    uint32_t epoch = 0;      // monotonic intent epoch, so a stale intent is dropped not replayed
-};
-
-struct CapacityReqModSplitTag {};    // MSPL: the masked groups leave the region onto a second node
-struct CapacityReqModFuseTag {};     // MFSE: the masked groups return to the region's main owner
-
-/**
- * CapacityGrpAsgnComponent - one standing group assignment the orchestrator relayed (Engine ledger).
+/* DIE GRUPPEN-ACHSE STAND HIER ALS VIER ECS-TYPEN. SIE SIND JETZT WERTE UND MODUL-ZEILEN.
  *
- * The SRPL liftability gate reads it: a node that carries the LAST instance of a group assignment
- * is NOT liftable (the analogue of the FLOOR-coverage gate) - without this row a module-split
- * target looks region-less to the surplus rule and would be retired while it simulates. Written by
- * the MSPL drain (L4), erased by the MFSE drain, read by the surplus rule (L3) - the shared home
- * is this L0 header, exactly like the intent PODs above.
- */
-struct CapacityGrpAsgnComponent {
-    uint32_t node_id = 0;    // node serving the group subset (the not-liftable carrier)
-    uint32_t region_id = 0;  // region whose subset it serves
-    uint64_t grp_mask = 0;   // the standing subset (mod_grp_bit set)
-};
-
-/**
- * CapacityRetireBusyComponent - the drain's answer when a retire order found only WORKING seeds.
+ * Es waren `CapacityReqGrpXmitComponent`, `CapacityReqModSplitTag`, `CapacityReqModFuseTag` und
+ * `CapacityGrpAsgnComponent`, eingefuehrt am 2026-08-03 mit der Begruendung: ase-capacity (L3) und
+ * ase-pl-capacity-orch (L4) fassen sie beide an, und ein L4-Plugin schliesst nie ein L3-Modul ein,
+ * also sei diese Schicht das einzige legale gemeinsame Zuhause.
  *
- * The fourth POD of the retire amendment, and it closes the attribution gap the two count axes
- * open: the scheduler's instance count is keyed by the SEED project while its coverage count is
- * keyed by the REGION's project - so a node seeded for P that covers only ANOTHER project's
- * regions inflates P's instance count forever, yet is never retirable (a holder is untouchable).
- * Without this answer the surplus rule re-raises the same order at every shard visit and the
- * drain drops it every time - an unbounded decide/drop loop of intent churn and warn spam.
+ * DIE PRAEMISSE STIMMT, DIE FOLGERUNG STIMMTE NICHT. Beide werden in DENSELBEN Engine-Prozess
+ * gebaut und teilen EINE Registry (servers/ase-server-engine/CMakeLists.txt:133 und :142). Die
+ * geteilten Zeilen waren also nie eine Tier-Naht, sondern derselbe Direktkanal eine Schicht tiefer:
+ * der Scheduler legte eine Entity an, das Plugin schrieb auf ihr weiter und zerstoerte sie - und
+ * umgekehrt fuehrte das Plugin ein Hauptbuch, in das der Scheduler hineinlas. Unbemerkt blieb es,
+ * weil hier beide Tore leer lesen: `foundation/` traegt keine `codegen.json`, und der
+ * Struktur-Validator greift in dieser Schicht nicht.
  *
- * So the drain replaces such an order with this row (the Genesis-WAIT precedent: the state is
- * named ONCE, then the log stays quiet), stamped with the bridged instance count the verdict was
- * made at. The scheduler stands down while the count still matches and destroys the row the
- * moment it moved; the drain itself removes the row as soon as a retirable candidate exists
- * again, because "my seed went idle" changes NO number the scheduler can see.
- */
-struct CapacityRetireBusyComponent {
-    uint32_t proj_hash = 0;      // project whose retire order found only working seeds
-    uint32_t inst_snapshot = 0;  // bridged instance count the verdict was made at (0 = unset)
-};
-
-// CONTRACT AMENDMENT 2026-07-28 (PLAN_ASE_COMPUTE_PHASE_02_ORCH WS-D.2). Two more shared PODs,
-// added under the same precedent as CapacityReqXmitComponent above: ase-capacity (L3) and
-// ase-pl-capacity-orch (L4) both touch them, and the ONLY legal shared home is this L0 header
-// (an L4 plugin never includes an L3 module). Minimal by design - nothing else moves here.
-
-/**
- * CapacityReqSpwnComponent - a spawn request materialized from a scheduler SPAWN intent.
+ * WAS AN IHRE STELLE TRAT, und warum die zwei Richtungen verschieden adressiert sind:
+ *   - Modul → Plugin (der Intent): CAP_GRP_XMIT_RGN/_FROM/_TO/_MASK/_EPOCH plus genau eine
+ *     Klassen-Taste CAP_GRP_REQ_MSPL / _MFSE, alle unter GLOBAL. Das Plugin fuehrt KEINE
+ *     Regionszeilen, kann also keine Region aufzaehlen, unter der es fragen wuerde - und der Hub
+ *     kennt keine Iteration. Also stellt der Erzeuger die GANZE Tatsache fest, Region
+ *     eingeschlossen, wie die Gelaende-Seite ihren Uebertritt als TER_CROSS_* feststellt.
+ *     Verbraucher: CapacityOrchHubGrpSyncSystem in CapacityOrchInpGrpComponent plus EIGENE Tags.
+ *   - Plugin → Modul (das Hauptbuch): CAP_GRP_ASGN_NODE/_MASK unter der REGION als Besitzer. Hier
+ *     geht owner-skopiert, weil der Scheduler seine Regionen kennt und unter jeder fragen kann.
+ *     Verbraucher: CapacityGrpIgstSystem in CapacityInpGrpAsgnComponent.
  *
- * Carries the project_id STRING (not just proj_hash) - the Vault path of the node token needs it
- * and proj_hash (FNV32 via entt::hashed_string) is not reversible. The scheduler resolves it once
- * at intent creation; char[16] < 256B is allowed in a component per WRFL_ASE_STRING_HANDLING
- * Abschnitt 1 (NODE_TOKEN_PROJ_ID_SZ above fixes the same width on frames 93/101/102).
- */
-struct CapacityReqSpwnComponent {
-    char project_id[NODE_TOKEN_PROJ_ID_SZ] = {};  // NUL-padded project id string (Vault path + wire)
-    uint32_t proj_hash = 0;                       // entt::hashed_string of project_id (FNV32)
-    uint32_t want_region_id = 0;                  // region to assign once the node is live (REGION_ID_NONE = none yet)
-};
+ * Die Asymmetrie folgt daraus, WEM EINE MENGE GEHOERT, nicht aus Geschmack. Was hier bleibt, ist
+ * die Namenstabelle der Gruppen und die Masken-Faltung: Rechenvorschriften, keine ECS-Typen. */
 
-/**
- * CapacityNodePendComponent - one node spawn in flight, visible to the scheduler.
+/* DIE BUSY-ANTWORT DES DRAINS STAND HIER ALS KOMPONENTE. SIE IST JETZT EIN WERT.
  *
- * The orchestration plugin (L4) emplaces it when it reserves a node and removes it when the node
- * turns live; the scheduler (L3) counts these rows so its FLOOR/SPLIT deficit uses
- * effective_nodes = live_nodes + pending_nodes and a booting spawn is never re-spawned at the
- * next reconcile (PLAN_ASE_COMPUTE_PHASE_02_ORCH WS-D.2, fixes #6).
- */
-struct CapacityNodePendComponent {
-    uint32_t node_id = 0;    // Engine-side logical node handle of the in-flight spawn
-    uint32_t proj_hash = 0;  // project the pending node was spawned for
-};
+ * Es war `CapacityRetireBusyComponent{proj_hash, inst_snapshot}`: der Drain (L4) legte sie an,
+ * wenn ein Retire-Auftrag nur ARBEITENDE Seeds fand, und der Scheduler (L3) las sie - und
+ * ZERSTOERTE sie, sobald der Stand nicht mehr passte. Ein Verbraucher, der in die Entity des
+ * Erzeugers greift, ueber eine Zeile, die in dieser Schicht lag, damit beide sie sehen.
+ *
+ * Es war nie eine Tier-Naht: Modul und Plugin werden in DENSELBEN Engine-Prozess gebaut und
+ * teilen EINE Registry (servers/ase-server-engine/CMakeLists.txt:133 und :142). Unbemerkt blieb
+ * es, weil `foundation/` keine `codegen.json` traegt und der Struktur-Validator hier nicht greift.
+ *
+ * WAS AN IHRE STELLE TRAT: CAP_PROJ_RETR_BUSY unter dem Projekt als Besitzer, Wert = der
+ * Instanzstand, bei dem das Urteil gefaellt wurde. Der Scheduler kann owner-skopiert fragen, weil
+ * er seine Projektzeilen kennt. Die Zeile selbst bleibt beim Drain, der sie fuehrt
+ * (CapacityOrchStaBusyComponent), und der Fremd-Destroy ging mit ihr: wer eine Tatsache feststellt,
+ * nimmt sie auch zurueck - der Drain, sobald wieder ein liftbarer Kandidat existiert, und der
+ * Projekt-Teardown, wenn das Projekt geht. */
+
+/* DIE SPAWN-NUTZLAST STAND HIER ALS KOMPONENTE (2026-07-28, PLAN_ASE_COMPUTE_PHASE_02_ORCH WS-D.2).
+ *
+ * Es war `CapacityReqSpwnComponent{project_id[16], proj_hash, want_region_id}` - die Zeile, die den
+ * project_id STRING trug, weil der Vault-Pfad des Knoten-Tokens ihn braucht und FNV32 einwegig ist.
+ * Genau DIESE Zeichenkette ist der Grund, warum die Region-Intents nicht als Hub-WERTE gefahren
+ * werden koennen (voller Befund oben bei `CapacityReqXmitComponent`): float32 traegt keinen Namen.
+ *
+ * SIE LIEGT JETZT AUF DER ZUSTELLUNG, nicht mehr im Fundament: `hub::HubCapSpwnReqComponent` neben
+ * `hub::HubCapXmitReqComponent`. proj_hash faellt dabei weg - er stand auf beiden Zeilen und war
+ * damit zwei Antworten auf eine Frage; die Bewegungszeile fuehrt ihn.
+ *
+ * NODE_TOKEN_PROJ_ID_SZ bleibt hier: die Breite ist eine Draht-Tatsache der Frames 93/101/102 und
+ * gilt fuer beide Seiten der Tier-Naht - anders als die Zeile, die sie benutzte. */
+
+/* DER PENDING-MARKER STAND HIER ALS KOMPONENTE. ER WAR REINE REDUNDANZ.
+ *
+ * Es war `CapacityNodePendComponent{node_id, proj_hash}`: das Orchestrator-Plugin (L4) legte ihn
+ * beim Reservieren an und entfernte ihn, sobald der Knoten lief - auf DERSELBEN Entity, die schon
+ * seinen eigenen `CapacityOrchNodePndTag` und seine eigene `CapacityOrchStaNodeComponent` trug,
+ * und die trägt node_id und proj_hash_seed ohnehin. Die Zeile trug also nichts Eigenes.
+ *
+ * SIE EXISTIERTE ALLEIN, DAMIT DER SCHEDULER SIE ZAEHLEN KANN - eine Aufzaehlung fremder
+ * Entitaeten zwischen zwei Parteien EINES Engine-Prozesses (servers/ase-server-engine/
+ * CMakeLists.txt:133 und :142, eine Registry). Kein Tier-Uebergang, sondern eine Sehne quer durch
+ * den Stern, auf einer Schicht ohne Paritaet und ohne Validator-Sicht.
+ *
+ * WAS AN IHRE STELLE TRAT: CAP_PROJ_PEND_NODES unter dem Projekt als Besitzer - eine ZAHL, die der
+ * Orchestrator ueber seine EIGENEN Zeilen bildet und feststellt. Niemand laeuft mehr durch die
+ * Menge eines anderen. Das Frame-Fenster schliesst der Schedule und nicht das Glueck: der
+ * Erzeuger laeuft in Maintenance (90), jede Reconcile-Regel in Reconciliation (91), also ist ein
+ * in DIESEM Frame reservierter Knoten bereits gezaehlt, wenn das Defizit gerechnet wird - genau
+ * der Doppel-Spawn, den diese Zeile verhindert hat (WS-D.2, fixes #6), und er bleibt verhindert.
+ *
+ * Mit ihr fielen zwei Folgeschaeden: die doppelte Umetikettierung beim Projekt-Merge (die eigene
+ * Knotenzeile wurde ohnehin schon umgeschrieben) und der zweite Marker beim Reservieren. */
 
 /**
  * CapacityNodeAdopComponent - one durable node row delivered to the orchestrator for adoption.
@@ -837,13 +944,29 @@ struct CapacityNodePendComponent {
  * The row is a REQUEST, not a claim of liveness: it states that a node with this identity was
  * durable, and the plugin's adopt pass is what confirms or drops it with systemctl is-active.
  */
-struct CapacityNodeAdopComponent {
-    char project_id[NODE_TOKEN_PROJ_ID_SZ] = {};  // NUL-padded project id string (empty = unresolved)
-    uint32_t node_id = 0;                         // logical node handle (the durable identity)
-    uint32_t port = 0;                            // listen port = systemd instance id to verify
-    uint32_t proj_hash = 0;                       // project the node was spawned for
-    uint32_t spawn_wall_s = 0;                    // unit-start wall second (0 = unknown)
-};
+/* DIE KNOTEN-ZUSTELLZEILE STAND HIER. SIE LIEGT JETZT IN DER MITTE DES STERNS.
+ *
+ * Es war `CapacityNodeAdopComponent`: ase-capacity (L3) legte sie an, ase-pl-capacity-orch (L4) las
+ * sie und zerstoerte sie. Beide werden in DENSELBEN Engine-Prozess gebaut und teilen EINE Registry
+ * (servers/ase-server-engine/CMakeLists.txt:133 und :142) - keine Tier-Naht, sondern eine Sehne
+ * quer durch den Stern.
+ *
+ * SIE KONNTE NICHT ZU WERTEN WERDEN, UND DAS IST DER LEHRSATZ. Sie traegt den project_id STRING -
+ * den Vault-Pfad des Knoten-Tokens -, und proj_hash ist ein einwegiger FNV32. Der Wertraum des
+ * Hubs ist float32: ein String passt dort nicht. Ihn als Zahlenhalbwerte zu kodieren waere ein
+ * selbstgebauter String-Ersatzkanal am Hub gewesen - ausdruecklich verboten -, und
+ * `set_debug_label` ist ein Debug-Werkzeug und nie ein Produktivpfad.
+ *
+ * DER SANKTIONIERTE WEG WAR SCHON GEBAUT: eine TYPISIERTE Request-Zeile, deren Zuhause ase-hub ist,
+ * abgeholt ueber die SDK-Grenze. Sie heisst jetzt `hub::HubCapNodeAdopComponent` samt
+ * `hub::HubCapAdopPendTag`, und `sdk::take_capacity_node_adoption()` gibt sie heraus. Praezedenz
+ * im Bestand: HubStgWflwReqComponent mit modules/ase-sdk/src/api/sdk_workflow.cpp, das denselben
+ * Satz im Kopfkommentar traegt - nur mit vertauschten Enden.
+ *
+ * WARUM ase-hub UND NICHT HIER. Layer 0 ist als frei von ECS definiert und traegt keine
+ * `codegen.json`; was hier liegt, erreicht becsy nie und ist zugleich fuer den Struktur-Validator
+ * unsichtbar. ase-hub ist die MITTE des Sterns - dort sehen beide Tore hin. Der Unterschied ist
+ * nicht kosmetisch, er ist genau der Grund, warum diese Naht so lange unbemerkt blieb. */
 
 /**
  * CapacityRegionAdopComponent - one ownership row delivered so a restarted Engine can rebuild it.
@@ -874,11 +997,25 @@ struct CapacityNodeAdopComponent {
  * The rect rides beside it in the RegionRect POD above, on the same delivery entity: rect geometry
  * has one shape in this codebase and a second copy of the four edges would be a second truth.
  */
-struct CapacityRegionAdopComponent {
-    uint32_t region_id = 0;  // the region's durable identity
-    uint32_t proj_hash = 0;  // project the region belongs to
-    uint32_t node_id = 0;    // mesh identity that served it (0 = unbound, re-queue instead)
-    uint32_t epoch = 0;      // assignment epoch, so a rebuilt row keeps its ordering
-};
+/* DIE ZUSTELLZEILE STAND HIER. SIE IST JETZT EINE EINZIGE TATSACHE.
+ *
+ * Es war `CapacityRegionAdopComponent{region_id, proj_hash, node_id, epoch}` samt der RegionRect
+ * auf derselben Zustell-Entity: ase-capacity (L3) legte sie an, ase-pl-capacity-orch (L4) las sie
+ * und zerstoerte sie. Beide werden in DENSELBEN Engine-Prozess gebaut und teilen EINE Registry
+ * (servers/ase-server-engine/CMakeLists.txt:133 und :142) - keine Tier-Naht, sondern eine Sehne
+ * quer durch den Stern, auf einer Schicht ohne Paritaet und ohne Validator-Sicht.
+ *
+ * ES BRAUCHTE GENAU EINEN SCHLUESSEL, WEIL ALLES ANDERE SCHON STAND. Projekt, Knoten, Epoche und
+ * Rect liegen unter der REGION als Besitzer - CAP_RGN_PROJ_HI/LO, CAP_RGN_NODE, CAP_RGN_EPOCH,
+ * CAP_RGN_CX0/CZ0/CX1/CZ1 -, und der Scheduler liest sie in seinem Ingest ohnehin selbst
+ * (capacity_rgn_igst_sys.cpp:239-288), bevor er irgendetwas weitergibt. Dem Verbraucher fehlte
+ * allein, WELCHE Region zugestellt wird; den Rest liest er unter diesem Besitzer selbst. Also
+ * CAP_RGN_ADOP_RGN unter GLOBAL, eine Zustellung je Durchgang - und keine zweite Kopie des Rects,
+ * die eine zweite Wahrheit ueber dieselbe Region waere.
+ *
+ * Die Zustellung ist weiterhin eine BEHAUPTUNG ueber die Vergangenheit, keine ueber die Gegenwart:
+ * sie sagt, dass diese Region von diesem Knoten bedient WURDE. Ob es den Knoten noch gibt, ist die
+ * Frage des Adopt-Passes, und eine Zeile, deren Knoten nicht adoptiert wurde, wird NICHT
+ * wiederhergestellt, sondern neu eingereiht. */
 
 }  // namespace ase::types
