@@ -162,9 +162,11 @@ constexpr uint32_t CELL_SECT_NONE        = 0u;   // wire code: no sector assigne
 // GEMESSEN 2026-08-10 an der laufenden Flotte: ein echter Spieler wandert seit 33 Minuten ueber
 // die Kugel, der World fuehrt 21 lebende Zellen (GeoidMrkrSystem "21 active"), und im Browser
 // stehen ZELLZEILEN 1. Die Ursache ist kein Fehler in einem der Glieder, sondern ein fehlendes
-// Glied: `GeoidZonePubSystem` sieht ausschliesslich Zellen mit `GeoidZonePndTag`
-// (geoid_zone_pub_sys.cpp:224) und schreibt fest CELL_STATE_ZONE (:262), die Gegenseite weist
-// jeden anderen Code ausdruecklich ab (replica_rcv_sys.cpp:3133). Eine Wabe, die begangen aber
+// Glied: `GeoidZonePubSystem` sieht ausschliesslich Zellen mit `GeoidZoneTag` (seit 2026-08-15
+// ohne den frueheren Umweg ueber eine vom Erzeuger gesetzte Warteschlangenmarke, die jedes
+// rechnende System an den server-only Egress band) und schreibt fest CELL_STATE_ZONE, die
+// Gegenseite weist jeden anderen Code ausdruecklich ab (replica_rcv_sys.cpp:3133). Eine Wabe,
+// die begangen aber
 // noch keine Zone ist, hat damit UEBERHAUPT KEINEN Traeger zum Replica - und sie ist das, was die
 // Spur ausmacht: die Zone waechst erst aus ihr.
 //
