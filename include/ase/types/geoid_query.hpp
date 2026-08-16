@@ -128,9 +128,15 @@ constexpr uint32_t geoid_poi_owner(uint32_t proj_hash, uint32_t ordinal) {
 
 /* DIE KLASSEN EINER ORTSMELDUNG UND DIE ORTSANFRAGE STEHEN NICHT MEHR HIER.
  *
- * Es waren `GeoidReqIntrPendTag`, `GeoidReqIntrEdgeTag` und `GeoidReqLocTag`. Sie liegen jetzt
- * neben `GeoidReqIntrAirTag` und `GeoidReqIntrSprTag` in
+ * Es waren `GeoidReqIntrPendTag`, `GeoidReqIntrEdgeTag` und `GeoidReqLocTag`, dazu
+ * `GeoidReqIntrAirTag` und `GeoidReqIntrSprTag`. Sie zogen zuerst nach
  * `modules/ase-geoid/include/ase/geoid/components/tag/`, wo das Gitter seine uebrigen Tags fuehrt.
+ * Davon steht heute (2026-08-15) nur noch `GeoidReqIntrPendTag` dort: er ist kein Klassen-Tag,
+ * sondern der Pending-Marker, den `geoid_mrkr_sys.cpp:GeoidMrkrSystem` in seiner View liest. Die
+ * DREI Klassen-Tags sind ersatzlos entfallen, weil die Klasse einer Meldung nicht beim Verbraucher
+ * entsteht, sondern beim ERZEUGER - und der erreicht ein Modul-Tag des Gitters nicht. Sie steht
+ * jetzt in `modules/ase-hub` (`HubGeoClsEdgeTag` und Geschwister), also in der Mitte des Sterns,
+ * die beide Seiten kennen duerfen.
  *
  * DER GRUND IST DERSELBE, DER DIE BEIDEN ANDEREN SCHON BEWEGT HAT, UND ER GALT IMMER FUER ALLE
  * FUENF. Der Text, der hier stand, argumentierte die Platzierung selbst weg: ein LEERER Tag trage
@@ -144,8 +150,21 @@ constexpr uint32_t geoid_poi_owner(uint32_t proj_hash, uint32_t ordinal) {
  * nie; und der Struktur-Validator greift in dieser Schicht nicht. Kein Build meldet etwas, nichts
  * wird rot, und die Sache sieht sauber aus.
  *
- * KEIN VERBRAUCHER VERLOR DABEI ETWAS. Der Terrain-Erzeuger setzt keinen fremden Tag mehr, sondern
- * stellt seine Tatsache als Wert unter GLOBAL fest (TER_CROSS_*); das Gitter spiegelt sie in seine
- * EIGENE Inp-Komponente und hebt daraus seine EIGENEN Tags. Der Stern hat wieder eine Mitte. */
+ * KEIN VERBRAUCHER VERLOR DABEI ETWAS. Der Terrain-Erzeuger setzt keinen fremden MODUL-Tag mehr,
+ * sondern stellt seine Tatsache als Wert im Stern fest; das Gitter hebt daraus seine EIGENEN Tags.
+ * Der Stern hat wieder eine Mitte.
+ *
+ * NACHTRAG 2026-08-15 (Geovis Phase 02): der erste Ersatz schrieb diesen Wert als sieben eigene
+ * Schluessel unter `hub::GLOBAL` (TER_CROSS_*), und ein modul-eigenes Spiegelsystem im Gitter las
+ * sie. Beides ist entfallen. Ein Erzeuger schreibt jetzt die VIER Vertragsschluessel
+ * GEO_POS_LAT_DEG/_LON_DEG/_ALT_M/_META unter SEINER MELDUNG als Owner und hebt dort
+ * `hub::HubGeoPosTag` plus ein Klassen-Tag; ein einziger Leser im Gitter zaehlt ueber diesen Merker
+ * auf. Zwei Gruende, und beide gehoeren zu der Lehre oben:
+ *   - `hub::GLOBAL` ist EIN Platz. N Meldungen in einem Takt ueberschrieben einander, und N-1
+ *     verschwanden lautlos, waehrend die Meldezeile weiterhin N nannte.
+ *   - Ein Spiegel je Erzeuger ist ein Kanal je Domaene. Neun Erzeuger waeren 56 Schluessel gewesen.
+ * Die Klassen-Tags liegen dabei in `modules/ase-hub` - in der MITTE des Sterns, die beide Seiten
+ * kennen duerfen -, nicht hier. Dass zwei Module einen Typ sehen muessen, ist NIE das Argument fuer
+ * Layer 0; hier gehoert nur, was eine TIER-Grenze quert. */
 
 }  // namespace ase::types

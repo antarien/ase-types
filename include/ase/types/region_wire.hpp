@@ -863,7 +863,14 @@ constexpr uint32_t ENTITY_SNAP_TLV_HDR_SZ    = 4u;   // per block: type_id(2) + 
  *     Klassen-Taste CAP_GRP_REQ_MSPL / _MFSE, alle unter GLOBAL. Das Plugin fuehrt KEINE
  *     Regionszeilen, kann also keine Region aufzaehlen, unter der es fragen wuerde - und der Hub
  *     kennt keine Iteration. Also stellt der Erzeuger die GANZE Tatsache fest, Region
- *     eingeschlossen, wie die Gelaende-Seite ihren Uebertritt als TER_CROSS_* feststellt.
+ *     eingeschlossen. [2026-08-15: dieser Satz nannte hier als Vorbild, wie die Gelaende-Seite
+ *     ihren Uebertritt als TER_CROSS_* unter GLOBAL feststellte. Das Vorbild gibt es nicht mehr,
+ *     und es taugte auch nicht als solches: GLOBAL ist EIN Platz, mehrere Meldungen desselben
+ *     Takts ueberschrieben einander, und der Zaehler nannte trotzdem alle. Der Uebertritt steht
+ *     seither unter der MELDUNG als Owner. Hier bleibt GLOBAL richtig, aber aus dem Grund eine
+ *     Zeile darueber - der Verbraucher kann keine Region aufzaehlen -, nicht aus Analogie. Ob
+ *     die Ein-Platz-Eigenschaft auf DIESEM Weg verlustfrei ist, haengt daran, dass der Erzeuger
+ *     jeden Pass neu ausstellt; das ist behauptet und nicht gemessen.]
  *     Verbraucher: CapacityOrchHubGrpSyncSystem in CapacityOrchInpGrpComponent plus EIGENE Tags.
  *   - Plugin → Modul (das Hauptbuch): CAP_GRP_ASGN_NODE/_MASK unter der REGION als Besitzer. Hier
  *     geht owner-skopiert, weil der Scheduler seine Regionen kennt und unter jeder fragen kann.
