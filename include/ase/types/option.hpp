@@ -1,5 +1,33 @@
 #pragma once
 
+/**
+ * ASE Layer 0 TYPE - Presence Carrier
+ *
+ * @file        option.hpp
+ * @brief       Option<T> - the ASE replacement for std::optional
+ * @description A value that may or may not be there, carried WITHOUT the vocabulary it exists
+ *              to replace. WRFL_ASE_STD_FORBIDDEN Section 1 bans std::optional across the tree,
+ *              and the offer standing in for it may not be built on it - the validator rule
+ *              STD_OPTIONAL_FORBIDDEN hit this very implementation on 2026-08-10, which is why
+ *              the storage is a value-plus-flag pair and not a wrapped std::optional.
+ *
+ *              T IS DEFAULT-CONSTRUCTED IN THE None STATE, and that is a contract, not an
+ *              accident: the ASE component ecosystem is POD-oriented and zero-init is what it
+ *              promises. An empty Option therefore holds a zero-initialised T that is never
+ *              observable through the API - every accessor gates on m_has first.
+ *
+ *              Import via:
+ *                #include <ase/types/option.hpp>
+ *                using ase::types::Option;
+ *
+ * @module      ase-types
+ * @layer       0 (Foundation)
+ * @category    error/result/optional
+ * @created     2025-12-15
+ * @modified    2026-08-20
+ * @version     1.1.0
+ */
+
 #include <stdexcept>
 #include <utility>
 

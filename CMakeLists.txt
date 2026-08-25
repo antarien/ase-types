@@ -103,6 +103,12 @@ add_library(${PROJECT_NAME} INTERFACE
     PLAN_ASE_PRESSURE_PHASE_01_ADDR).
     ]]
     include/ase/types/hexgrid_wire.hpp
+
+    #[[
+    GEOID QUERY
+    Query PODs for geoid lookups, shared like the wire types above.
+    ]]
+    include/ase/types/geoid_query.hpp
 )
 add_library(ase::types ALIAS ${PROJECT_NAME})
 

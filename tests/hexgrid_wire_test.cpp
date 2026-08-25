@@ -26,16 +26,22 @@ using namespace ase::types;
 namespace {
 
 constexpr int32_t FACE_COUNT = 20;              // icosahedron faces the lattice address spans
-constexpr int32_t FACE_STRIDE = 524288;         // HEXGRID_FACE_STRIDE, ase-math/hexgrid.hpp:191
-constexpr int32_t ADDRESS_FREQUENCY = 262144;   // HEXGRID_ADDRESS_FREQUENCY, ase-math/hexgrid.hpp:184
-constexpr int32_t MAX_CX = 10223616;            // 19 * FACE_STRIDE + ADDRESS_FREQUENCY, hexgrid.hpp:189
+// NAMES CORRECTED 2026-08-23: the three lines below cited HEXGRID_FACE_STRIDE and
+// HEXGRID_ADDRESS_FREQUENCY "in ase-math/hexgrid.hpp" at :191/:184/:189. Measured: that header
+// declares neither constant (its only HEXGRID_* is HEXGRID_FLATTENING_MAX), and the three
+// addresses land on `*/`, a geodetic line and `theta`. The names live in PROSE only, in the
+// lattice-address paragraph of hexgrid_wire.hpp; the VALUES are defined right here and nowhere
+// else. Kept as literals with their derivation spelled out, which is what a test needs.
+constexpr int32_t FACE_STRIDE = 524288;         // stride between two icosahedron faces
+constexpr int32_t ADDRESS_FREQUENCY = 262144;   // address frequency inside one face
+constexpr int32_t MAX_CX = 10223616;            // 19 * FACE_STRIDE + ADDRESS_FREQUENCY
 constexpr int32_t ALIAS_PERIOD = 1048576;       // 2 * FACE_STRIDE, the window of the old packing
 constexpr int32_t ALIAS_OF_MAX_CX = 786432;     // FACE_STRIDE + ADDRESS_FREQUENCY, old twin of MAX_CX
 constexpr int32_t INNER_SEAT_I = 1000;          // inner seat of a face, all three weights non-zero
 constexpr int32_t INNER_SEAT_J = 1000;          // inner seat of a face, never a pentagon corner
 constexpr int32_t SECOND_SEAT_I = 12345;        // second inner seat, unrelated to the first
 constexpr int32_t SECOND_SEAT_J = 6789;         // second inner seat, unrelated to the first
-constexpr int32_t LIVE_BIG_CX = 5332818;        // measured live, test_replication_cap_node.cpp:1051
+constexpr int32_t LIVE_BIG_CX = 5332818;        // measured live in test_replication_cap_node.cpp
 constexpr int32_t LIVE_ALIAS_CX = 4284242;      // LIVE_BIG_CX minus ALIAS_PERIOD, its old twin
 constexpr int32_t LIVE_CZ = -40;                // the negative cz that pair was measured at
 constexpr int32_t OLD_LAYOUT_BITS = 20;         // bits per axis of the 3D form
@@ -53,7 +59,7 @@ constexpr uint32_t SWEEP_COUNT = 400u;          // FACE_COUNT times SAMPLE_I_COU
  * OLD rule of the collision case. Layer 0 must not include Layer 3 and neither may this test, so
  * the reference is the frozen bit layout itself (20 bits per axis, centre offset 1 << 19,
  * x | y<<20 | z<<40) written out once - mirrored from
- * modules/ase-terrain/include/ase/terrain/types.hpp:182-184 and :655-659.
+ * CHUNK_BITS and CHUNK_OFFSET in modules/ase-terrain/include/ase/terrain/types.hpp.
  */
 uint64_t terrain_reference_pack(int32_t cx, int32_t cy, int32_t cz) {
     const uint32_t bits = static_cast<uint32_t>(OLD_LAYOUT_BITS);
@@ -118,7 +124,10 @@ TEST_CASE("Lattice address: cells that aliased under the 20-bit packing carry di
 TEST_CASE("Lattice address: the cell id round trip is the identity on every face") {
     /**
      * The seats are INNER seats. (i=0, j=0) is an icosahedron corner, a pentagon that the marker
-     * path rejects productively (gis_hxgn_mrkr_sys.cpp:274), so a proof carried there would be a
+     * path rejects productively. NAME CORRECTED 2026-08-23: this cited
+     * `gis_hxgn_mrkr_sys.cpp:274`, a file that no longer exists anywhere in the tree — the
+     * HXGN_MRKR constants live in ase-gis/types.hpp and no marker system of that name remains.
+     * A proof carried on a corner would be a
      * proof about a cell that never exists.
      */
     const int32_t seat_i[SEAT_COUNT] = {INNER_SEAT_I, SECOND_SEAT_I};

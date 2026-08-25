@@ -19,7 +19,9 @@
  *              below). What it CAN carry is a rule for computing a number - `geoid_poi_owner`
  *              folds (project, ordinal) into a Hub owner, and that fold crosses a real TIER
  *              boundary: the World writes GEO_POIS_CX/CZ under it (geoid_pois_pub_sys.cpp:235)
- *              and the Replica reads them back (replica_cap_push_sys.cpp:604). Two processes,
+ *              and the Replica reads them back. NAME CORRECTED 2026-08-23: this cited
+ *              `replica_cap_push_sys.cpp:604`, a file that does not exist in the tree; the
+ *              reader is replica_cap_resp_sys. Two processes,
  *              two registries, no shared Hub - which is exactly what Layer 0 exists for.
  *
  *              NO ECS HERE. What remains is a constant and a fold - no registry, no EnTT, no
@@ -33,6 +35,7 @@
  *
  * @module      ase-types
  * @layer       0 (Foundation)
+ * @category    structure/reference/identifier
  * @created     2026-08-06
  * @modified    2026-08-14
  * @version     1.2.0

@@ -1,5 +1,34 @@
 #pragma once
 
+/**
+ * ASE Layer 0 TYPE - Ok-or-Error Carrier
+ *
+ * @file        result.hpp
+ * @brief       Result<T, E> - the ASE ok-or-error carrier
+ * @description An outcome that is EITHER a value OR an error, never both and never neither,
+ *              carried without the vocabulary it exists to replace. WRFL_ASE_STD_FORBIDDEN bans
+ *              std::variant and std::function tree-wide, and the offer standing in for them may
+ *              not be built on them - the validator rules STD_VARIANT_FORBIDDEN and
+ *              STD_FUNCTION_FORBIDDEN hit this very implementation on 2026-08-10. The storage is
+ *              therefore an ok-slot plus an err-slot plus a discriminant.
+ *
+ *              BOTH SLOTS ARE DEFAULT-CONSTRUCTED and only the discriminated one is ever
+ *              observable through the API. The idle slot holding a zero-initialised value is the
+ *              normal state of things, not a cost: the ASE ecosystem is POD-oriented and
+ *              zero-init is its contract.
+ *
+ *              Import via:
+ *                #include <ase/types/result.hpp>
+ *                using ase::types::Result;
+ *
+ * @module      ase-types
+ * @layer       0 (Foundation)
+ * @category    error/result
+ * @created     2025-12-15
+ * @modified    2026-08-20
+ * @version     1.1.0
+ */
+
 #include <stdexcept>
 #include <utility>
 #include <string>

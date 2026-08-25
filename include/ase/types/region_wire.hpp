@@ -27,6 +27,7 @@
  *
  * @module      ase-types
  * @layer       0 (Foundation)
+ * @category    network/message
  * @created     2026-07-28
  * @modified    2026-07-28
  * @version     2.0.0
@@ -165,7 +166,9 @@ constexpr uint32_t CELL_SECT_NONE        = 0u;   // wire code: no sector assigne
 // Glied: `GeoidZonePubSystem` sieht ausschliesslich Zellen mit `GeoidZoneTag` (seit 2026-08-15
 // ohne den frueheren Umweg ueber eine vom Erzeuger gesetzte Warteschlangenmarke, die jedes
 // rechnende System an den server-only Egress band) und schreibt fest CELL_STATE_ZONE, die
-// Gegenseite weist jeden anderen Code ausdruecklich ab (replica_rcv_sys.cpp:3133). Eine Wabe,
+// Gegenseite weist jeden anderen Code ausdruecklich ab. NAME KORRIGIERT 2026-08-23: hier stand
+// `replica_rcv_sys.cpp:3133` — diese Datei gibt es im Baum nicht. Die Pruefung auf
+// CELL_STATE_ZONE liegt heute in replica_cell_mirr_sys.cpp. Eine Wabe,
 // die begangen aber
 // noch keine Zone ist, hat damit UEBERHAUPT KEINEN Traeger zum Replica - und sie ist das, was die
 // Spur ausmacht: die Zone waechst erst aus ihr.
@@ -523,6 +526,52 @@ constexpr float LATTICE_HEAD_SEMI_MIN_M = 1.0f;  // smallest radius that still d
 // this bound is a corrupt frame, not an exotic planet - the decoder drops it instead of mirroring a
 // contract that cannot be drawn.
 constexpr float LATTICE_HEAD_FLAT_MAX = 0.999f;  // highest flattening a contract row may carry
+
+// ---------------------------------------------------------------------------
+// Actor cell row (World → Replica) - the moving carrier mark of the geoid tab
+// ---------------------------------------------------------------------------
+// A signature is an emission AROUND a carrier (operator decision 2026-08-17):
+// radial halos without a visible settler are effect without cause. The carrier
+// mark therefore needs ONE standing row per actor - which lattice cell the
+// actor stands on RIGHT NOW - and that row updates ONLY on a cell change,
+// mirroring "movement is a cell hop" (the mark sits IN the cell, never between
+// two). The World resolves the cell through its own loc/site chain (degrees →
+// canonical cell address, the same resolution every interaction report takes);
+// the Replica may not include ase-geoid, so the resolved address travels here.
+//
+// World → Replica on the existing binary WS lane, behind the same conn and
+// region gates as TERRAIN_DELTA(106), GIS_CELL_ZONE(122) and GIS_CELL_LOAD(130).
+// 25 B, far under the 65536 lane fit; a re-send is an idempotent upsert keyed on
+// (proj_hash, actor_key), so an at-least-once wire needs no extra logic.
+// actor_key is an OPAQUE key, never a meaning: it identifies the row across
+// frames exactly the way (cx,cz) keys a cell row, and no receiver dereferences
+// it into a foreign registry (an EnTT id means nothing outside its registry).
+constexpr uint8_t BIN_MSG_GEOID_ACTR_CELL = 133u; // World → Replica: one actor's resolved lattice cell (update on cell change)
+
+// Frame-133 layout:
+// [133][region_id:u32][actor_key:u32][cx:i32][cz:i32][cls_id:u32][state:u32] = 25 B.
+// region_id routes the row through the SAME ownership gate as 122/130 (the sending conn must
+// own the region), so proj_hash is resolved on the Replica side by the region join and never
+// asserted by the sender. cls_id names the actor class for the mark's SYMBOL channel (three
+// display channels: symbol = class, colour = sphere, size = value); state carries the liveliness
+// (a corpse keeps its mark, dimmed - the dead stay visible because they still smell).
+constexpr uint32_t ACTR_CELL_FRAME_SZ   = 25u;  // [133](1) + region(4) + actor(4) + cx(4) + cz(4) + cls(4) + state(4)
+constexpr uint32_t ACTR_CELL_OFF_REGION = 1u;   // u32 offset of the routing region id
+constexpr uint32_t ACTR_CELL_OFF_ACTOR  = 5u;   // u32 offset of the opaque actor key
+constexpr uint32_t ACTR_CELL_OFF_CX     = 9u;   // i32 offset of the resolved cell chunk X
+constexpr uint32_t ACTR_CELL_OFF_CZ     = 13u;  // i32 offset of the resolved cell chunk Z
+constexpr uint32_t ACTR_CELL_OFF_CLS    = 17u;  // u32 offset of the actor class id (symbol channel)
+constexpr uint32_t ACTR_CELL_OFF_STATE  = 21u;  // u32 offset of the liveliness state
+
+// THE STATE VOCABULARY OF THE FRAME - declared HERE because both ends read it. One class for
+// now (AI/PC is a state class, never a player/NPC split); future classes extend the vocabulary
+// without touching the layout. There is deliberately NO "gone" state yet: nothing in the tree
+// destroys a corpse today (measured 2026-08-17, lifecycle_dth_exe/dcm destroy only request
+// entities), so a retire path would be a wire word without a producer - it is added together
+// with the first system that actually destroys an actor entity.
+constexpr uint32_t ACTR_CLS_BEING   = 1u;  // a living-kind actor (players and beings alike)
+constexpr uint32_t ACTR_STATE_ALIVE = 1u;  // carries LifecycleAlivTag - full mark
+constexpr uint32_t ACTR_STATE_STILL = 2u;  // corpse - dimmed silent mark (it still smells)
 
 // ---------------------------------------------------------------------------
 // Region identity + geometry
@@ -1017,7 +1066,7 @@ constexpr uint32_t ENTITY_SNAP_TLV_HDR_SZ    = 4u;   // per block: type_id(2) + 
  * ES BRAUCHTE GENAU EINEN SCHLUESSEL, WEIL ALLES ANDERE SCHON STAND. Projekt, Knoten, Epoche und
  * Rect liegen unter der REGION als Besitzer - CAP_RGN_PROJ_HI/LO, CAP_RGN_NODE, CAP_RGN_EPOCH,
  * CAP_RGN_CX0/CZ0/CX1/CZ1 -, und der Scheduler liest sie in seinem Ingest ohnehin selbst
- * (capacity_rgn_igst_sys.cpp:239-288), bevor er irgendetwas weitergibt. Dem Verbraucher fehlte
+ * (CapacityRgnIgstSystem liest sie in seinem Ingest-Gang), bevor er irgendetwas weitergibt. Dem Verbraucher fehlte
  * allein, WELCHE Region zugestellt wird; den Rest liest er unter diesem Besitzer selbst. Also
  * CAP_RGN_ADOP_RGN unter GLOBAL, eine Zustellung je Durchgang - und keine zweite Kopie des Rects,
  * die eine zweite Wahrheit ueber dieselbe Region waere.

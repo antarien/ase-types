@@ -17,7 +17,9 @@
  *                 form is WIDENED to 32 bits per axis. The 3D form keeps its 20-bit layout. The
  *                 20-bit layout was frozen on 2026-07-30 against a measured EMPTY address space
  *                 (PLAN_ASE_LATTICE_PHASE_00_CONTRACT.md:243); the lattice address space that
- *                 followed reaches cx = 10223616 (ase-math/hexgrid.hpp:189) and every second
+ *                 followed reaches cx = 10223616 (that figure is derived in
+ *                 PLAN_ASE_PRESSURE_PHASE_01_ADDR.md, not in ase-math/hexgrid.hpp — the older
+ *                 pointer here named that header and no line in it carries the number) and every second
  *                 icosahedron face aliased onto the same key. Measured before the change: 5242900
  *                 valid cx produced 524290 distinct keys, group size uniformly 10.
  *
@@ -52,6 +54,7 @@
  *
  * @module      ase-types
  * @layer       0 (Foundation)
+ * @category    structure/reference/identifier
  * @created     2026-07-31
  * @modified    2026-08-14
  * @version     1.2.0
@@ -78,8 +81,8 @@ namespace ase::types {
 //
 // 3D form, chunk_coords_to_id: 20 bits per axis, centre-offset,
 // x | y<<20 | z<<40. Bit layout taken over UNCHANGED from the terrain constants
-// it supersedes (modules/ase-terrain/include/ase/terrain/types.hpp:182-184 and
-// :655-659). The values are mirrored, not included, because Layer 0 must not
+// it supersedes (CHUNK_BITS and CHUNK_OFFSET in
+// modules/ase-terrain/include/ase/terrain/types.hpp). The values are mirrored, not included, because Layer 0 must not
 // include Layer 3; the identity of the 3D form with that reference is pinned by
 // a test. Three axes in a u64 cap at 21 bits each, so this form cannot carry the
 // lattice address space and does not try to - it carries the HEIGHT axis, where
@@ -91,8 +94,8 @@ namespace ase::types {
 // missing. Redistributing them keeps the key at 64 bits and makes it injective
 // over the whole int32 plane. The form is not invented here: it is the one
 // already used productively for the same purpose in
-// modules/ase-replication/src/resource/replica_cell_tplg_resource_manager.cpp:53-56
-// and replica_rgn_chnk_resource_manager.cpp:55.
+// `pack_cell_coord` in modules/ase-replication/src/resource/replica_cell_tplg_resource_manager.cpp
+// and in replica_rgn_chnk_resource_manager.cpp.
 // ---------------------------------------------------------------------------
 
 /** Bits one axis occupies inside the packed chunk id. */
@@ -110,7 +113,8 @@ constexpr int32_t CHUNK_ID_OFFSET = 1 << (CHUNK_ID_BITS - 1);
  * A lattice cell IS a chunk address (cx,cz) - two dimensions. Zero is the only reading the
  * existing code allows: the chunk grid is the coordinate system and y is intra-chunk height, not
  * a partition axis (PLAN_ASE_COMPUTE.md:193), the region rect carries no y at all
- * (region_wire.hpp:151-163), and the terrain coordinate component documents its vertical slice as
+ * (the RegionRect declaration in region_wire.hpp carries cx0/cz0/cx1/cz1 and no vertical
+ * axis), and the terrain coordinate component documents its vertical slice as
  * 0 in the flat case. That reading is frozen as point (5) of the master freeze row
  * (PLAN_ASE_LATTICE.md:108) and stays frozen.
  *
@@ -224,7 +228,8 @@ constexpr int32_t chunk_id_to_cell_z(uint64_t cell_id) {
 // the halves, never from a float comparison.
 //
 // House convention, measured: the SPT_CHUNK_ID_HIGH / SPT_CHUNK_ID_LOW pair
-// already moves u32 halves this way (gis_qry_sys.cpp:206, gis_lyr_wrt_sys.cpp:175).
+// already moves u32 halves this way - grep SPT_CHUNK_ID_HIGH to reach the sites
+// (ase-gis, ase-spatial and ase-capacity all carry one).
 // ---------------------------------------------------------------------------
 
 /** Bits one half of the coordinate pattern occupies. */
