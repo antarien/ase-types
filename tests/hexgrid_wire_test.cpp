@@ -1,18 +1,36 @@
 /**
- * Hex Lattice Wire Unit Tests
+ * =============================================================================
+ * ASE TYPES - Hex Lattice Wire Unit Tests
+ * =============================================================================
  *
- * The address cases of PLAN_ASE_PRESSURE_PHASE_01_ADDR.md: the pairs that collided under the
- * 20-bit packing, the round trip of the widened 2D cell form over all twenty icosahedron faces,
- * the injectivity of that form across the declared lattice range, and the proof that the 3D form
- * is untouched and its height axis still carries.
+ * @file        hexgrid_wire_test.cpp
+ * @brief       Address cases of the widened lattice form, over all twenty faces.
+ * @description The address cases of PLAN_ASE_PRESSURE_PHASE_01_ADDR.md: the pairs that collided
+ *              under the 20-bit packing, the round trip of the widened 2D cell form over all
+ *              twenty icosahedron faces, the injectivity of that form across the declared
+ *              lattice range, and the proof that the 3D form is untouched and its height axis
+ *              still carries.
  *
- * Every case walks the public surface of hexgrid_wire.hpp only. Layer 0 carries no dependency, so
- * the two outside facts this file needs - the lattice address stride and the old 20-bit layout -
- * are restated here as named constants with the file and line they come from. A divergence
- * between a restatement and its source is exactly the drift these cases exist to catch.
+ *              Every case walks the public surface of hexgrid_wire.hpp only. Layer 0 carries no
+ *              dependency, so the two outside facts this file needs - the lattice address stride
+ *              and the old 20-bit layout - are restated here as named constants with the file
+ *              and line they come from. A divergence between a restatement and its source is
+ *              exactly the drift these cases exist to catch.
  *
- * The doctest main is switched on from tests/CMakeLists.txt rather than from a define here, so
- * this file carries no macro definition of its own.
+ *              The doctest main is switched on from tests/CMakeLists.txt rather than from a
+ *              define here, so this file carries no macro definition of its own.
+ *
+ * -----------------------------------------------------------------------------
+ * META
+ * -----------------------------------------------------------------------------
+ * @module      ase-types
+ * @layer       0 (Foundation)
+ * @category    structure/reference/identifier
+ * @created     2026-08-08
+ * @modified    2026-08-25
+ * @version     1.0.0
+ *
+ * =============================================================================
  */
 
 #include <doctest/doctest.h>

@@ -109,6 +109,21 @@ add_library(${PROJECT_NAME} INTERFACE
     Query PODs for geoid lookups, shared like the wire types above.
     ]]
     include/ase/types/geoid_query.hpp
+
+    #[[
+    RESIDENCY SEAM
+    ResAlivRect - die modulübergreifende Tatsache, WELCHE Flächen dieses Knotens gerade
+    bespielt sind. Erzeuger ist ase-geoid, Verbraucher sind die Familien-Sweeps; die Naht liegt
+    aus demselben Grund in L0 wie types::RegionRect.
+
+    SIE STAND BIS 2026-08-31 IN KEINER CMakeLists, obwohl DREI Module sie einbinden -
+    modules/ase-geoid/src/cell/geoid_aliv_rect_sys.cpp,
+    modules/ase-character/src/lifecycle/character_rest_sys.cpp und
+    .../character_wake_sys.cpp. Gefunden hat es validate_cmake_files beim ersten Lauf der
+    Batterie fuer foundation/ase-types SELBST: die Einheit liegt in keinem Tier-Zuschnitt, also
+    hat dieses Tor sie nie gesehen. Vergessene Eintragung, keine tote Datei.
+    ]]
+    include/ase/types/residency.hpp
 )
 add_library(ase::types ALIAS ${PROJECT_NAME})
 

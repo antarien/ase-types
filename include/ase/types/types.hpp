@@ -57,6 +57,20 @@ constexpr uint64_t InvalidHash = 0;                // Invalid hash sentinel (0 =
 /**
  * FLOAT SENTINEL CHECKS
  * Functions for consistent float sentinel checking across modules.
+ *
+ * @parity      shared
+ *
+ * DIESE MARKE HOLT DAS TYPVOKABULAR AUF DIE CLIENT-SEITE, und ohne sie war es dort nicht
+ * vorhanden. Der Erzeuger uebersetzt je Modul dessen `types.hpp` und zusaetzlich jede geteilte
+ * Einheit mit `@parity shared` - dieselbe Marke, mit der Components und Systems ihre Seite
+ * erklaeren.
+ *
+ * WARUM AUSGERECHNET DIESE DATEI: sie ist reine Rechnung auf Werten, ohne Zustand und ohne
+ * Abhaengigkeit, und sie steht UNTER allem. Jede transpilierte Formel eines Moduls, die einen
+ * Sentinel prueft, ruft hierher. Fehlte sie im Client, war die Formel sauber uebersetzt und
+ * trotzdem unbrauchbar - der Aufruf zeigte auf eine Funktion, die es nirgends gibt. Gemessen
+ * wurde das an einer Modul-Formel, deren Rumpf `is_unset` und `is_not_found` prueft: der
+ * Client-Bau brach, und zwar erst NACHDEM die Uebersetzung selbst richtig geworden war.
  */
 constexpr bool is_val_float(float v) { return v > FloatNotFound && v < FloatUnset; }  // Valid (not sentinel)
 constexpr bool is_neg_float(float v) { return v > FloatNotFound && v < 0.0f; }        // Negative (excluding NOT_FOUND)

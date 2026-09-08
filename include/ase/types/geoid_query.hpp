@@ -67,7 +67,7 @@ namespace ase::types {
  * ├──────────────────────────────┼───────────────────────────────┼───────────────────────────────┤
  * │ GEOID_ADDRESS_FREQUENCY      │ GEO_CONST_ADDRESS_FREQUENCY   │ 0 Verbraucher ausserhalb      │
  * │ GEOID_ADDRESS_FACE_STRIDE    │ GEO_CONST_ADDRESS_FACE_STRIDE │ 0 Verbraucher ausserhalb      │
- * │ GEOID_ADDRESS_LEVEL_MAX      │ GEO_CONST_ADDRESS_LEVEL_MAX   │ Erzeuger der Vertragszeile    │
+ * │ GEOID_ADDRESS_LEVEL_MAX      │ GEO_CONST_ADDRESS_BITS        │ Erzeuger der Vertragszeile    │
  * │ GEOID_PENTAGON_NEIGHBORS     │ GEO_CONST_PENTAGON_NEIGHBORS  │ semantischer Vergleich        │
  * └──────────────────────────────┴───────────────────────────────┴───────────────────────────────┘
  *
