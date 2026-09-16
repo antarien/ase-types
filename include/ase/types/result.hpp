@@ -4,6 +4,7 @@
  * ASE Layer 0 TYPE - Ok-or-Error Carrier
  *
  * @file        result.hpp
+ * @design      DSGN_016
  * @brief       Result<T, E> - the ASE ok-or-error carrier
  * @description An outcome that is EITHER a value OR an error, never both and never neither,
  *              carried without the vocabulary it exists to replace. WRFL_ASE_STD_FORBIDDEN bans

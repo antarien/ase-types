@@ -15,6 +15,7 @@
  *
  * @module      ase-types
  * @layer       0 (Foundation)
+ * @design      DSGN_016
  * @created     2026-01-01
  * @modified    2026-02-02
  * @version     1.0.0

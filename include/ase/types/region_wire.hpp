@@ -4,6 +4,7 @@
  * ASE MODULE TYPES (SSOT)
  *
  * @file        region_wire.hpp
+ * @design      DSGN_019
  * @brief       Frozen world-region wire contract - BIN_MSG ids, region rect, snapshot layouts
  * @description The ONE place every tier learns the world-region wire from. Frames 92-106 are the
  *              reserved region band (highest live id is 91 = RSN_TRIGGER_INJECT); network/types.hpp

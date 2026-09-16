@@ -4,6 +4,7 @@
  * ASE MODULE TYPES (SSOT)
  *
  * @file        hexgrid_wire.hpp
+ * @design      DSGN_019
  * @brief       Frozen hex-lattice seam - chunk-id packing SSOT and the hub bit-pattern codec
  * @description The ONE place the planetary hex lattice crosses a module boundary. Two subjects
  *              live here, both fixed by PLAN_ASE_LATTICE_PHASE_00_CONTRACT.md:
