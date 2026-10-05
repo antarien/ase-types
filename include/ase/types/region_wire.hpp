@@ -575,6 +575,86 @@ constexpr uint32_t ACTR_STATE_ALIVE = 1u;  // carries LifecycleAlivTag - full ma
 constexpr uint32_t ACTR_STATE_STILL = 2u;  // corpse - dimmed silent mark (it still smells)
 
 // ---------------------------------------------------------------------------
+// Class codes - ONE code space for every class the geoid tab draws
+// ---------------------------------------------------------------------------
+// The actor class above and the report classes below share one space, because the browser joins
+// every class code against ONE registry: the Replica declares one registry row per code (sphere
+// and glyph) and delivers it to each session. The browser never names a class - it reads the code
+// off a row and looks it up among the registry rows it was sent, so a new class costs a code here
+// and a row in the Replica, and nothing in the browser.
+//
+// A code is a word of THIS contract because it crosses the tier boundary: the World writes it
+// (frame 133 today, the class row of a report cell with the report classes), the Replica declares
+// its registry row, and neither may include the other. The report classes mirror the class tags of
+// ase-hub (components/tag/geo/hub_geo_cls_<x>_tag.hpp) suffix for suffix. Codes append; a retired
+// code is never handed to another class, or an old row would be read under a new meaning.
+constexpr uint32_t GEO_CLS_AHA  = 2u;   // a being broke through here (HubGeoClsAhaTag)
+constexpr uint32_t GEO_CLS_BTH  = 3u;   // a being was born here (HubGeoClsBthTag)
+constexpr uint32_t GEO_CLS_CPS  = 4u;   // matter of this mass stands here (HubGeoClsCpsTag)
+constexpr uint32_t GEO_CLS_DET  = 5u;   // something was perceived here (HubGeoClsDetTag)
+constexpr uint32_t GEO_CLS_DTH  = 6u;   // a being died here (HubGeoClsDthTag)
+constexpr uint32_t GEO_CLS_EDGE = 7u;   // something stepped over a cell edge (HubGeoClsEdgeTag)
+constexpr uint32_t GEO_CLS_GRP  = 8u;   // a moving group's tread (HubGeoClsGrpTag)
+constexpr uint32_t GEO_CLS_HNT  = 9u;   // a hunt is under way here (HubGeoClsHntTag)
+constexpr uint32_t GEO_CLS_INT  = 10u;  // someone intends something here (HubGeoClsIntTag)
+constexpr uint32_t GEO_CLS_MTG  = 11u;  // two beings met here (HubGeoClsMtgTag)
+constexpr uint32_t GEO_CLS_NRG  = 12u;  // a body burns here (HubGeoClsNrgTag)
+constexpr uint32_t GEO_CLS_POOL = 13u;  // the gene pool was fed here (HubGeoClsPoolTag)
+constexpr uint32_t GEO_CLS_PRCP = 14u;  // it is raining here (HubGeoClsPrcpTag)
+constexpr uint32_t GEO_CLS_PRD  = 15u;  // a predation kill (HubGeoClsPrdTag)
+constexpr uint32_t GEO_CLS_PRES = 16u;  // an embodied actor stands here (HubGeoClsPresTag)
+constexpr uint32_t GEO_CLS_TRL  = 17u;  // a lingering trace on the ground (HubGeoClsTrlTag)
+
+// ---------------------------------------------------------------------------
+// Report class row (World → Replica) - which class reported in which cell
+// ---------------------------------------------------------------------------
+// A cell row (frame 122) says WHERE something happened, never WHO reported it: the class tag a
+// producer raises on its report ends at the World. This row carries it on - ONE row per
+// (cell, class), keyed on the Replica by (proj_hash, cx, cz, cls_id) the way frame 133 keys an
+// actor, and joined in the browser against the SAME registry rows that translate the actor class.
+// The World reads the class tags in one view per tag and writes the code of the block above;
+// nobody on either side names a class.
+//
+// value is the GEO_POS_META of the LATEST report of this class in this cell - the size channel of
+// the three display channels (symbol = class, colour = sphere, size = value). Its meaning is the
+// class's and never a second field: a count for perception, a priority rank for an intention, the
+// raw precipitation for rain. The row updates when the value or the address of its cell changes;
+// an address changes on a lattice re-grid, and the row has to follow its cell into the new grid.
+//
+// World → Replica on the existing binary WS lane, behind the same conn, region and rect gates as
+// frames 122, 130 and 133. 21 B, far under the 65536 lane fit; a re-send is an idempotent upsert.
+// There is deliberately NO retire word: a cell row does not retire when its marker decays either -
+// the trail stays in the Replica mirror until the lattice changes under it, and the class row
+// shares that life. The id continues the registry after 139 (134-139 are the reasoning memory lane).
+constexpr uint8_t BIN_MSG_GEOID_CLS_CELL = 140u; // World → Replica: one report class standing in one lattice cell (update on value or address change)
+
+// Frame-140 layout:
+// [140][region_id:u32][cx:i32][cz:i32][cls_id:u32][value:f32] = 21 B.
+constexpr uint32_t CLS_CELL_FRAME_SZ   = 21u;  // [140](1) + region(4) + cx(4) + cz(4) + cls(4) + value(4)
+constexpr uint32_t CLS_CELL_OFF_REGION = 1u;   // u32 offset of the routing region id
+constexpr uint32_t CLS_CELL_OFF_CX     = 5u;   // i32 offset of the cell chunk X
+constexpr uint32_t CLS_CELL_OFF_CZ     = 9u;   // i32 offset of the cell chunk Z
+constexpr uint32_t CLS_CELL_OFF_CLS    = 13u;  // u32 offset of the class code (GEO_CLS_*)
+constexpr uint32_t CLS_CELL_OFF_VALUE  = 17u;  // f32 offset of the latest report's meta value
+
+// ---------------------------------------------------------------------------
+// Sphere numbers - the seven spheres of the world
+// ---------------------------------------------------------------------------
+// One-based, zero means "no sphere". It is the SAME numbering as ase-gis (GIS_SPHERE_* in its
+// types.hpp): a registry row of the Replica and a layer row of the World meet in ONE palette in the
+// browser, and a colour follows its sphere, never its rank. The wire catalog compares both lists
+// and stops the build on any drift. The browser derives its palette from the spheres it FINDS in
+// the rows; it never holds this list itself.
+constexpr uint32_t GEO_SPHERE_NONE   = 0u;  // no sphere assigned
+constexpr uint32_t GEO_SPHERE_LITHO  = 1u;  // rock and ground
+constexpr uint32_t GEO_SPHERE_ATMO   = 2u;  // air and weather
+constexpr uint32_t GEO_SPHERE_HYDRO  = 3u;  // water
+constexpr uint32_t GEO_SPHERE_BIO    = 4u;  // life
+constexpr uint32_t GEO_SPHERE_ANTHRO = 5u;  // society, craft and knowledge of beings
+constexpr uint32_t GEO_SPHERE_MAGIA  = 6u;  // magic
+constexpr uint32_t GEO_SPHERE_SPIRI  = 7u;  // spirit and soul
+
+// ---------------------------------------------------------------------------
 // Region identity + geometry
 // ---------------------------------------------------------------------------
 constexpr uint32_t REGION_ID_NONE       = 0u;    // sentinel: no region (never a valid region_id)
