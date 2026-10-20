@@ -15,14 +15,12 @@
  *              two Layer 3 modules of the same tier - the seven question and answer PODs that
  *              tried are documented below, and they fell away with the module boundary that made
  *              them necessary. It cannot carry the NAME OF A CLASS either: an empty tag IS an ECS
- *              component, and the three that stood here have moved to their owner module (note
- *              below). What it CAN carry is a rule for computing a number - `geoid_poi_owner`
- *              folds (project, ordinal) into a Hub owner, and that fold crosses a real TIER
- *              boundary: the World writes GEO_POIS_CX/CZ under it (geoid_pois_pub_sys.cpp:235)
- *              and the Replica reads them back. NAME CORRECTED 2026-08-23: this cited
- *              `replica_cap_push_sys.cpp:604`, a file that does not exist in the tree; the
- *              reader is replica_cap_resp_sys. Two processes,
- *              two registries, no shared Hub - which is exactly what Layer 0 exists for.
+ *              component, and a class belongs to the module that owns it (note below). What it CAN
+ *              carry is a rule for computing a number - `geoid_poi_owner` folds (project, ordinal)
+ *              into a Hub owner, and that fold crosses a real TIER boundary: the World writes
+ *              GEO_POIS_CX/CZ under it (geoid_pois_pub_sys.cpp) and the Replica reads them back
+ *              (replica_cap_resp_sys.cpp). Two processes, two registries, no shared Hub - which is
+ *              exactly what Layer 0 exists for.
  *
  *              NO ECS HERE. What remains is a constant and a fold - no registry, no EnTT, no
  *              component, no tag, no behaviour. Layer 0 stays ECS free.
@@ -30,15 +28,16 @@
  *              THE ADDRESS IS THE CHUNK ADDRESS. (cx,cz) as int32 is the cell address of Master
  *              binding decision 1, and there is no second cell id world. It is DERIVED from the
  *              place with the running rung and never travels: neither through this header nor
- *              beside a place, because a stored address is a second truth that the next epoch
- *              change makes wrong.
+ *              beside a place, because a stored address is a value the next epoch change makes
+ *              wrong, with no writer left to correct it.
  *
  * @module      ase-types
  * @layer       0 (Foundation)
  * @category    structure/reference/identifier
+ * @usecase     usecase:5754 - map geo information
  * @created     2026-08-06
- * @modified    2026-08-14
- * @version     1.2.0
+ * @modified    2026-10-18
+ * @version     1.2.1
  *
  * DRY / SOLID / SSOT COMPLIANCE:
  * - NO ECS: no registry, no EnTT, no component behaviour in this header
@@ -137,16 +136,17 @@ constexpr uint32_t geoid_poi_owner(uint32_t proj_hash, uint32_t ordinal) {
  * Davon steht heute (2026-08-15) nur noch `GeoidReqIntrPendTag` dort: er ist kein Klassen-Tag,
  * sondern der Pending-Marker, den `geoid_mrkr_sys.cpp:GeoidMrkrSystem` in seiner View liest. Die
  * DREI Klassen-Tags sind ersatzlos entfallen, weil die Klasse einer Meldung nicht beim Verbraucher
- * entsteht, sondern beim ERZEUGER - und der erreicht ein Modul-Tag des Gitters nicht. Sie steht
- * jetzt in `modules/ase-hub` (`HubGeoClsEdgeTag` und Geschwister), also in der Mitte des Sterns,
- * die beide Seiten kennen duerfen.
+ * entsteht, sondern beim ERZEUGER - und der erreicht ein Modul-Tag des Gitters nicht. Die Klasse
+ * ist jetzt die Zeilenart der Meldung in `modules/ase-hub` (HUB_GEO_CLS_<X> mit der gemeinsamen
+ * Marke HUB_GEO_FIN, modules/ase-hub/data/hub_rows.json), also in der Mitte des Sterns, die beide
+ * Seiten kennen duerfen.
  *
  * DER GRUND IST DERSELBE, DER DIE BEIDEN ANDEREN SCHON BEWEGT HAT, UND ER GALT IMMER FUER ALLE
- * FUENF. Der Text, der hier stand, argumentierte die Platzierung selbst weg: ein LEERER Tag trage
- * nur den NAMEN einer Klasse und kein Datum, also duerfe er unter den Modulen sitzen. Das gilt fuer
- * eine Formel und bricht bei einem Tag. Ein Tag IST eine ECS-Komponente - er wird emplaced, er
- * filtert eine View, er hat eine Lebenszeit an einer Entitaet. Layer 0 ist als frei von
- * ECS-Abhaengigkeit definiert.
+ * FUENF. Eine Platzierung unter den Modulen laesst sich so begruenden: ein LEERER Tag trage nur den
+ * NAMEN einer Klasse und kein Datum, also duerfe er unter den Modulen sitzen. Das gilt fuer eine
+ * Formel und bricht bei einem Tag. Ein Tag IST eine ECS-Komponente - er wird emplaced, er filtert
+ * eine View, er hat eine Lebenszeit an einer Entitaet. Layer 0 ist als frei von ECS-Abhaengigkeit
+ * definiert.
  *
  * WARUM ES SO LANGE UNBEMERKT BLIEB, IST DIE EIGENTLICHE LEHRE: beide Tore lesen hier gleichzeitig
  * leer. `foundation/` traegt keine `codegen.json`, ist also paritaetsunfaehig und erreicht becsy
@@ -154,19 +154,18 @@ constexpr uint32_t geoid_poi_owner(uint32_t proj_hash, uint32_t ordinal) {
  * wird rot, und die Sache sieht sauber aus.
  *
  * KEIN VERBRAUCHER VERLOR DABEI ETWAS. Der Terrain-Erzeuger setzt keinen fremden MODUL-Tag mehr,
- * sondern stellt seine Tatsache als Wert im Stern fest; das Gitter hebt daraus seine EIGENEN Tags.
- * Der Stern hat wieder eine Mitte.
+ * sondern stellt seine Tatsache im Stern fest; das Gitter hebt daraus seine EIGENEN Tags. Der Stern
+ * hat wieder eine Mitte.
  *
- * NACHTRAG 2026-08-15 (Geovis Phase 02): der erste Ersatz schrieb diesen Wert als sieben eigene
- * Schluessel unter `hub::GLOBAL` (TER_CROSS_*), und ein modul-eigenes Spiegelsystem im Gitter las
- * sie. Beides ist entfallen. Ein Erzeuger schreibt jetzt die VIER Vertragsschluessel
- * GEO_POS_LAT_DEG/_LON_DEG/_ALT_M/_META unter SEINER MELDUNG als Owner und hebt dort
- * `hub::HubGeoPosTag` plus ein Klassen-Tag; ein einziger Leser im Gitter zaehlt ueber diesen Merker
- * auf. Zwei Gruende, und beide gehoeren zu der Lehre oben:
+ * WIE EINE ORTSMELDUNG HEUTE AUSSIEHT. Ein Erzeuger legt eine Zeile seiner Zeilenart
+ * HUB_GEO_CLS_<X> an, schreibt die VIER Vertragsschluessel GEO_POS_LAT_DEG/_LON_DEG/_ALT_M/_META
+ * unter dieser Zeile als Owner und hebt die Marke HUB_GEO_FIN; ein einziger Leser im Gitter zaehlt
+ * ueber diese Marke auf. Zwei Gruende, und beide gehoeren zu der Lehre oben:
  *   - `hub::GLOBAL` ist EIN Platz. N Meldungen in einem Takt ueberschrieben einander, und N-1
- *     verschwanden lautlos, waehrend die Meldezeile weiterhin N nannte.
- *   - Ein Spiegel je Erzeuger ist ein Kanal je Domaene. Neun Erzeuger waeren 56 Schluessel gewesen.
- * Die Klassen-Tags liegen dabei in `modules/ase-hub` - in der MITTE des Sterns, die beide Seiten
+ *     verschwaenden lautlos, waehrend die Meldezeile weiterhin N nennte.
+ *   - Ein eigenes Lesesystem je Erzeuger waere ein Kanal je Domaene. Neun Erzeuger waeren 56
+ *     Schluessel.
+ * Die Zeilenarten liegen dabei in `modules/ase-hub` - in der MITTE des Sterns, die beide Seiten
  * kennen duerfen -, nicht hier. Dass zwei Module einen Typ sehen muessen, ist NIE das Argument fuer
  * Layer 0; hier gehoert nur, was eine TIER-Grenze quert. */
 

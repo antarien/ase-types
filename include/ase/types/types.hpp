@@ -16,9 +16,11 @@
  * @module      ase-types
  * @layer       0 (Foundation)
  * @design      DSGN_016
+ * @usecase     usecase:101124 - catch sentinel at entrance
+ * @actor       Entity Component System (ECS)
  * @created     2026-01-01
- * @modified    2026-02-02
- * @version     1.0.0
+ * @modified    2026-10-19
+ * @version     1.1.0
  *
  * ECS TYPES COMPLIANCE
  *
@@ -33,9 +35,6 @@
 
 #include <cstdint>
 #include <cfloat>
-
-#include <ase/types/option.hpp>
-#include <ase/types/result.hpp>
 
 namespace ase::types {
 

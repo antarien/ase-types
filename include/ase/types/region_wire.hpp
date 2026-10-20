@@ -8,16 +8,19 @@
  * @brief       Frozen world-region wire contract - BIN_MSG ids, region rect, snapshot layouts
  * @description The ONE place every tier learns the world-region wire from. Frames 92-106 are the
  *              reserved region band (highest live id is 91 = RSN_TRIGGER_INJECT); network/types.hpp
- *              and replica_types.hpp INCLUDE this header instead of restating the values, which is
- *              what kills the 33/34/35-class drift where two modules disagreed on one id.
+ *              and the ase-replication parts types/capacity_region and types/class_registry
+ *              INCLUDE this header instead of restating the values, which is what kills the
+ *              33/34/35-class drift where two modules disagreed on one id.
  *
- *              RENAMED 2026-07-28 from mesh_wire.hpp. "Mesh" reads as a polygon mesh in a 3D
- *              engine and misled a reader into thinking this file, and the module consuming it,
- *              were terrain geometry. The subject here is the REGION - a rectangle of chunks one
- *              World node owns - and the frames that move a region between nodes.
+ *              THE SUBJECT IS THE REGION - a rectangle of chunks one World node owns - and the
+ *              frames that move a region between nodes, together with the server-to-server frames
+ *              whose layouts both of their ends read from here.
  *
- *              Layer 0 stays ECS-free: only constexpr and plain PODs live here - no registry, no
- *              EnTT include, no logic. The emplace/View usage of the intent PODs lives in L3/L4.
+ *              Layer 0 stays ECS-free: only constexpr, plain PODs and arithmetic on this contract
+ *              live here - no registry, no EnTT include, no state. The functions it carries compute
+ *              a bit or a byte of the contract and nothing else: the ownership test of a rect, the
+ *              group-mask folds, the little-endian field writers and their u32 reader. The emplace/View usage of the
+ *              intent PODs lives in L3/L4.
  *
  *              Byte layouts are stated as explicit offset/size constants, never as sizeof() of a
  *              padded struct: two independently built binaries must encode the same bytes.
@@ -29,9 +32,10 @@
  * @module      ase-types
  * @layer       0 (Foundation)
  * @category    network/message
+ * @usecase     usecase:100023 - replicate world state
  * @created     2026-07-28
- * @modified    2026-07-28
- * @version     2.0.0
+ * @modified    2026-10-19
+ * @version     2.2.0
  *
  * ECS TYPES COMPLIANCE
  *
@@ -48,11 +52,9 @@
 
 namespace ase::types {
 
-// ---------------------------------------------------------------------------
 // BIN_MSG band 92-106 - the reserved world-region frames (PROTOCOL SSOT).
 // Cross-checked against the live registry: the highest live id is 91
 // (RSN_TRIGGER_INJECT), 107+ is the quota/edge-workflow band already in use.
-// ---------------------------------------------------------------------------
 constexpr uint8_t BIN_MSG_WORLD_REGION_DECLARE    = 92u;  // World → Replica: the regions this node owns (RegionRect*N)
 constexpr uint8_t BIN_MSG_WORLD_REGION_ASSIGN     = 93u;  // Replica → World: take ownership of this region
 constexpr uint8_t BIN_MSG_WORLD_REGION_RELINQUISH = 94u;  // Replica → World: give up this region (teardown/merge)
@@ -83,7 +85,7 @@ constexpr uint32_t NODE_TOKEN_PROJ_ID_SZ = 16u;  // NUL-padded project id on fra
 constexpr uint32_t NODE_TOKEN_MAX        = 191u; // "<org>.<token_id>.<secret>" upper bound on 102
 constexpr uint8_t BIN_MSG_CAP_LEADER_CLAIM        = 105u; // Engine → Replica: capacity-scheduler HA lease claim (Mongo capacity_leader is authority)
 constexpr uint8_t BIN_MSG_TERRAIN_DELTA           = 106u; // World → Replica: changed CELLS only - the steady-state terrain feed
-constexpr uint8_t BIN_MSG_TERRAIN_PAGE_NACK       = 131u; // Replica → World: ONE chunk the receiver could not park - the back channel of the baseline lane, layout TRN_NACK_* below. Mirrored in ase-network types.hpp (value SSOT) and replica_types.hpp; registered in the PROTOCOL allocation table the same day (next free was 131)
+constexpr uint8_t BIN_MSG_TERRAIN_PAGE_NACK       = 131u; // Replica → World: ONE chunk the receiver could not park - the back channel of the baseline lane, layout TRN_NACK_* below. Defined here only; ase-network, ase-replication and ase-terrain read it as types::BIN_MSG_TERRAIN_PAGE_NACK. Registered in the PROTOCOL allocation table the same day (next free was 131)
 
 // Frame-105 layout. CONTRACT AMENDMENT 2026-07-29: the frozen plan fixes the claim as
 // [105][engine_id:u32][epoch_ms:u64] (PLAN_ASE_COMPUTE "Multi-Engine HA / leader election") and
@@ -135,10 +137,10 @@ constexpr uint8_t CAP_NODE_STATE_DEAD = 5u;  // dead: reaped or hung-restarted; 
 // and 104 stays deliberately unassigned). CONTRACT AMENDMENT 2026-07-31 (operator task #39,
 // PLAN_ASE_LATTICE_PHASE_06_INTEG WS-I.1 link 9): the lattice cell-state seam had no wire leg -
 // the only emplace<ReplicaStaCellComponent> was the Neo4j boot rehydrator reading back the very
-// mirror that feeds the graph writer, so the circle had no entrance. This frame IS that entrance:
+// cell rows that feed the graph writer, so the circle had no entrance. This frame IS that entrance:
 // [122][region_id:u32][cx:i32][cz:i32][state:u32][gate_mask:u32][sect_id:u32] - ONE persistent-
 // zone cell row, World → Replica, staged by the gis zone egress on Dissemination and folded by
-// the Replica as an idempotent upsert into the (proj_hash,cx,cz) cell mirror (proj_hash resolved
+// the Replica as an idempotent upsert into its (proj_hash,cx,cz) cell rows (proj_hash resolved
 // via the region row join, behind the same conn + region + rect gates as TERRAIN_DELTA(106)).
 // The state code below is wire ENCODING only: the Replica translates CELL_STATE_ZONE into its
 // module-local TPLG_CELL_STATE_ZONE at the decode seam, so the two ladders cannot drift silently.
@@ -164,15 +166,11 @@ constexpr uint32_t CELL_SECT_NONE        = 0u;   // wire code: no sector assigne
 // GEMESSEN 2026-08-10 an der laufenden Flotte: ein echter Spieler wandert seit 33 Minuten ueber
 // die Kugel, der World fuehrt 21 lebende Zellen (GeoidMrkrSystem "21 active"), und im Browser
 // stehen ZELLZEILEN 1. Die Ursache ist kein Fehler in einem der Glieder, sondern ein fehlendes
-// Glied: `GeoidZonePubSystem` sieht ausschliesslich Zellen mit `GeoidZoneTag` (seit 2026-08-15
-// ohne den frueheren Umweg ueber eine vom Erzeuger gesetzte Warteschlangenmarke, die jedes
-// rechnende System an den server-only Egress band) und schreibt fest CELL_STATE_ZONE, die
-// Gegenseite weist jeden anderen Code ausdruecklich ab. NAME KORRIGIERT 2026-08-23: hier stand
-// `replica_rcv_sys.cpp:3133` — diese Datei gibt es im Baum nicht. Die Pruefung auf
-// CELL_STATE_ZONE liegt heute in replica_cell_mirr_sys.cpp. Eine Wabe,
-// die begangen aber
-// noch keine Zone ist, hat damit UEBERHAUPT KEINEN Traeger zum Replica - und sie ist das, was die
-// Spur ausmacht: die Zone waechst erst aus ihr.
+// Glied: `GeoidZonePubSystem` sieht ausschliesslich Zellen mit `GeoidZoneTag` und schreibt fest
+// CELL_STATE_ZONE, und die Gegenseite weist jeden anderen Code ausdruecklich ab (die Pruefung auf
+// CELL_STATE_ZONE liegt in replica_cell_mirr_sys.cpp). Eine Wabe, die begangen aber noch keine
+// Zone ist, hat damit UEBERHAUPT KEINEN Traeger zum Replica - und sie ist das, was die Spur
+// ausmacht: die Zone waechst erst aus ihr.
 //
 // WARUM KEIN ZWEITER RAHMEN. Frame 122 traegt `state` als FELD. Ein Feld mit genau einem
 // zulaessigen Wert haette niemand vier Byte gekostet, und die Ablehnung anderer Codes ist als
@@ -195,7 +193,6 @@ constexpr uint32_t CELL_STATE_MARK       = 1u;   // wire code: cell walked and s
 // the migration note there - THIS anchor only pins the ids so no later band reuses them.
 // The module axis (MODSET/HOFF_MODSET) therefore starts at 125 below.
 
-// ---------------------------------------------------------------------------
 // Module-group registry - the module axis of the dynamic server meshing.
 // CONTRACT AMENDMENT 2026-08-03 (PLAN_ASE_COMPUTE_MOD_AXIS.md T4, decision E4
 // option I-B): the ASSIGNMENT UNIT of the module axis is the causality GROUP,
@@ -218,7 +215,6 @@ constexpr uint32_t CELL_STATE_MARK       = 1u;   // wire code: cell walked and s
 // environment modules. Unlisted modules resolve to MOD_GRP_ID_NONE and are
 // NOT maskable: they ride every node like the KERN plane until an amendment
 // assigns them - a silent default group would mis-attribute their load.
-// ---------------------------------------------------------------------------
 constexpr uint32_t MOD_GRP_KERN = 0u;  // infrastructure plane: loaded in EVERY tier build (T2: all four CMakes) - never assignable, registry slot 0 is the invariant
 constexpr uint32_t MOD_GRP_TERR = 1u;  // terrain plane: space-bound, region-local (the "terrain = own instance" cut, ARCH_ASE_REP_SRV.md:591)
 constexpr uint32_t MOD_GRP_ENTV = 2u;  // entity plane: the dense CAUSA clique - per-entity keys at tick rate, UNSEPARABLE inside, moves as a whole
@@ -278,8 +274,8 @@ constexpr const char* MOD_GRP_LOAD_KEYS[MOD_GRP_COUNT] = {
 // f32: above 2^24 a whole number stops being representable and increments vanish silently, while a
 // raw 32-bit pattern in the slot can come out NEGATIVE - which is_not_found (v <= FloatNotFound)
 // reads as ABSENT. So each end appends _HI and _LO and moves two non-negative halves below 65536,
-// the ENG_PROJ_HASH_HI/LO house pattern and mirror condition A7 above. Reading one half alone is a
-// rate that jumps by 65536.
+// the ENG_PROJ_HASH_HI/LO house pattern and condition A7 of the EntitySnap block below. Reading one
+// half alone is a rate that jumps by 65536.
 //
 // A group whose plane ships no deltas has an EMPTY stem here, its values never exist, and the rate
 // honestly reads 0 - the same honest zero the old contract promised, now by absence (NOT_FOUND)
@@ -314,7 +310,6 @@ constexpr uint32_t rgn_dlt_join(float hi, float lo) {
          | (static_cast<uint32_t>(lo) & RGN_DLT_HALF_MASK);
 }
 
-// ---------------------------------------------------------------------------
 // GROUP-MASK ON THE HUB - one key, and a ceiling the compiler enforces.
 //
 // A group subset is a bit set over the dense group registry above. It rides the
@@ -328,7 +323,6 @@ constexpr uint32_t rgn_dlt_join(float hi, float lo) {
 // worse than one that never travelled. The static_assert below turns that day
 // into a build failure with this comment attached, so whoever appends the 25th
 // group splits the key into halves the way rgn_dlt_hi/lo already do.
-// ---------------------------------------------------------------------------
 
 /** Highest group count whose full mask still fits a hub value slot without loss. */
 constexpr uint32_t GRP_MASK_HUB_MAX_GROUPS = 24u;
@@ -385,7 +379,6 @@ constexpr uint32_t mod_grp_of(const char* module_name) {
     return MOD_GRP_ID_NONE;
 }
 
-// ---------------------------------------------------------------------------
 // Frames 125-128 - the module-axis MODSET band. CONTRACT AMENDMENT 2026-08-03
 // (PLAN_ASE_COMPUTE_MOD_AXIS.md T4; ids registered in the PROTOCOL note chain,
 // 123/124 = WRLD_LIFE reservation above). The frozen region band 92-106 stays
@@ -395,7 +388,6 @@ constexpr uint32_t mod_grp_of(const char* module_name) {
 // No version handshake, no coexistence window (the NMQ/RMQ lesson, T5).
 // All four ride the existing relay: ORCHESTRATOR → Replica park → targeted
 // relay to ONE conn (frame-93 pattern), far under the 65536 lane fit.
-// ---------------------------------------------------------------------------
 constexpr uint8_t BIN_MSG_WORLD_MODSET_ASSIGN  = 125u; // Engine → Replica → World: WHICH groups of the region this node simulates
 constexpr uint8_t BIN_MSG_WORLD_MODSET_DECLARE = 126u; // World → Replica: the complete (region, grp_mask) set this node serves
 constexpr uint8_t BIN_MSG_WORLD_MODSET_RELINQ  = 127u; // Replica → World: give up this group subset of the region
@@ -434,7 +426,6 @@ constexpr uint32_t HOFF_MODSET_FRAME_SZ    = 17u;   // [128](1) + handoff_id(8) 
 constexpr uint32_t HOFF_MODSET_OFF_HANDOFF = 1u;    // u64 offset of the handoff id the mask scopes
 constexpr uint32_t HOFF_MODSET_OFF_MASK    = 9u;    // u64 offset of the group bitmask of the partial handoff
 
-// ---------------------------------------------------------------------------
 // The lattice pressure lane - frames 129/130 (CONTRACT AMENDMENT 2026-08-04,
 // PLAN_ASE_PRESSURE_PHASE_03_SEAM WS-C.1/WS-C.3).
 //
@@ -445,7 +436,7 @@ constexpr uint32_t HOFF_MODSET_OFF_MASK    = 9u;    // u64 offset of the group b
 // the measurement (GisColLodComponent: occupancy, dlt_rate and the folded 0..1
 // pressure) but it never left the World: measured 2026-08-04, GisColLodComponent
 // had zero readers outside ase-gis and its own tests, and the Replica had no
-// cell-load mirror at all. These two frames are that missing leg.
+// cell-load row at all. These two frames are that missing leg.
 //
 // WHY TWO FRAMES AND NOT AN EXTENSION OF 122: the ascent is an EVENT, the load
 // is a periodic SAMPLE of a cell that may never ascend (a marker column is
@@ -457,8 +448,8 @@ constexpr uint32_t HOFF_MODSET_OFF_MASK    = 9u;    // u64 offset of the group b
 // WHY THE HEADER TRAVELS AT ALL: the display level and the ellipsoid are World
 // truth (ase-gis GIS_HXGN_ELSD_SEMI_MAJOR_M / _FLATTENING, math::HexgridEllipsoid).
 // The Replica is L3 and may not include ase-gis, so without this frame it would
-// have to restate those constants - a second truth, and an ellipsoid change in
-// the backend would tear the picture silently (phase plan gap L-6). The header
+// have to restate those constants, and an ellipsoid change in the backend would
+// then tear the picture silently (phase plan gap L-6). The header
 // is planet-wide, not per project: the Replica joins it to each project it
 // already owns, so no project identity rides the wire that the Replica cannot
 // already resolve.
@@ -467,7 +458,6 @@ constexpr uint32_t HOFF_MODSET_OFF_MASK    = 9u;    // u64 offset of the group b
 // and region gates as TERRAIN_DELTA(106) and GIS_CELL_ZONE(122). Sizes are 13 B
 // and 25 B - far under the 65536 lane fit, and a re-send is an idempotent upsert
 // keyed on (proj_hash,cx,cz), so an at-least-once wire needs no extra logic.
-// ---------------------------------------------------------------------------
 constexpr uint8_t BIN_MSG_GIS_LATTICE_HEAD = 129u; // World → Replica: the lattice contract (level + ellipsoid) of the simulated planet
 constexpr uint8_t BIN_MSG_GIS_CELL_LOAD    = 130u; // World → Replica: one measured cell column (occupancy, delta rate, folded load)
 
@@ -507,7 +497,7 @@ constexpr uint32_t CELL_LOAD_OFF_LOAD   = 21u;  // f32 offset of the folded 0..1
 // clamped into 0..1 (ase-gis GIS_COL_LOD_MIN/_MAX), so a negative value can never collide with a
 // measurement; this is the same -1 ABSENT sentinel the tier vitals already carry on this codebase
 // (PLAN_ASE_HUB_OWNR_SCOPE, null-tile fix 2026-07-30). On receipt the Replica REMOVES the load
-// mirror of that cell; the push row then carries the address without a load field, and the client
+// row of that cell; the push row then carries the address without a load field, and the client
 // draws ABSENT.
 constexpr float CELL_LOAD_ABSENT = -1.0f;  // wire sentinel: this column is no longer measured
 
@@ -524,18 +514,17 @@ constexpr float LATTICE_HEAD_SEMI_MIN_M = 1.0f;  // smallest radius that still d
 
 // Flattening is (a-b)/a and therefore lives in [0, 1): 0 is a sphere and 1 would be a disc with no
 // polar axis at all. The projection clamps at 0.999 for exactly that reason, so a value at or above
-// this bound is a corrupt frame, not an exotic planet - the decoder drops it instead of mirroring a
+// this bound is a corrupt frame, not an exotic planet - the decoder drops it instead of storing a
 // contract that cannot be drawn.
 constexpr float LATTICE_HEAD_FLAT_MAX = 0.999f;  // highest flattening a contract row may carry
 
-// ---------------------------------------------------------------------------
 // Actor cell row (World → Replica) - the moving carrier mark of the geoid tab
-// ---------------------------------------------------------------------------
+//
 // A signature is an emission AROUND a carrier (operator decision 2026-08-17):
 // radial halos without a visible settler are effect without cause. The carrier
 // mark therefore needs ONE standing row per actor - which lattice cell the
 // actor stands on RIGHT NOW - and that row updates ONLY on a cell change,
-// mirroring "movement is a cell hop" (the mark sits IN the cell, never between
+// following "movement is a cell hop" (the mark sits IN the cell, never between
 // two). The World resolves the cell through its own loc/site chain (degrees →
 // canonical cell address, the same resolution every interaction report takes);
 // the Replica may not include ase-geoid, so the resolved address travels here.
@@ -574,9 +563,8 @@ constexpr uint32_t ACTR_CLS_BEING   = 1u;  // a living-kind actor (players and b
 constexpr uint32_t ACTR_STATE_ALIVE = 1u;  // carries LifecycleAlivTag - full mark
 constexpr uint32_t ACTR_STATE_STILL = 2u;  // corpse - dimmed silent mark (it still smells)
 
-// ---------------------------------------------------------------------------
 // Class codes - ONE code space for every class the geoid tab draws
-// ---------------------------------------------------------------------------
+//
 // The actor class above and the report classes below share one space, because the browser joins
 // every class code against ONE registry: the Replica declares one registry row per code (sphere
 // and glyph) and delivers it to each session. The browser never names a class - it reads the code
@@ -585,35 +573,36 @@ constexpr uint32_t ACTR_STATE_STILL = 2u;  // corpse - dimmed silent mark (it st
 //
 // A code is a word of THIS contract because it crosses the tier boundary: the World writes it
 // (frame 133 today, the class row of a report cell with the report classes), the Replica declares
-// its registry row, and neither may include the other. The report classes mirror the class tags of
-// ase-hub (components/tag/geo/hub_geo_cls_<x>_tag.hpp) suffix for suffix. Codes append; a retired
-// code is never handed to another class, or an old row would be read under a new meaning.
-constexpr uint32_t GEO_CLS_AHA  = 2u;   // a being broke through here (HubGeoClsAhaTag)
-constexpr uint32_t GEO_CLS_BTH  = 3u;   // a being was born here (HubGeoClsBthTag)
-constexpr uint32_t GEO_CLS_CPS  = 4u;   // matter of this mass stands here (HubGeoClsCpsTag)
-constexpr uint32_t GEO_CLS_DET  = 5u;   // something was perceived here (HubGeoClsDetTag)
-constexpr uint32_t GEO_CLS_DTH  = 6u;   // a being died here (HubGeoClsDthTag)
-constexpr uint32_t GEO_CLS_EDGE = 7u;   // something stepped over a cell edge (HubGeoClsEdgeTag)
-constexpr uint32_t GEO_CLS_GRP  = 8u;   // a moving group's tread (HubGeoClsGrpTag)
-constexpr uint32_t GEO_CLS_HNT  = 9u;   // a hunt is under way here (HubGeoClsHntTag)
-constexpr uint32_t GEO_CLS_INT  = 10u;  // someone intends something here (HubGeoClsIntTag)
-constexpr uint32_t GEO_CLS_MTG  = 11u;  // two beings met here (HubGeoClsMtgTag)
-constexpr uint32_t GEO_CLS_NRG  = 12u;  // a body burns here (HubGeoClsNrgTag)
-constexpr uint32_t GEO_CLS_POOL = 13u;  // the gene pool was fed here (HubGeoClsPoolTag)
-constexpr uint32_t GEO_CLS_PRCP = 14u;  // it is raining here (HubGeoClsPrcpTag)
-constexpr uint32_t GEO_CLS_PRD  = 15u;  // a predation kill (HubGeoClsPrdTag)
-constexpr uint32_t GEO_CLS_PRES = 16u;  // an embodied actor stands here (HubGeoClsPresTag)
-constexpr uint32_t GEO_CLS_TRL  = 17u;  // a lingering trace on the ground (HubGeoClsTrlTag)
+// its registry row, and neither may include the other. The report classes follow the place-report
+// row kinds HUB_GEO_CLS_<X> of ase-hub (modules/ase-hub/data/hub_rows.json) suffix for suffix.
+// Codes append; a retired code is never handed to another class, or an old row would be read
+// under a new meaning.
+constexpr uint32_t GEO_CLS_AHA  = 2u;   // a being broke through here (row kind HUB_GEO_CLS_AHA)
+constexpr uint32_t GEO_CLS_BTH  = 3u;   // a being was born here (row kind HUB_GEO_CLS_BTH)
+constexpr uint32_t GEO_CLS_CPS  = 4u;   // matter of this mass stands here (row kind HUB_GEO_CLS_CPS)
+constexpr uint32_t GEO_CLS_DET  = 5u;   // something was perceived here (row kind HUB_GEO_CLS_DET)
+constexpr uint32_t GEO_CLS_DTH  = 6u;   // a being died here (row kind HUB_GEO_CLS_DTH)
+constexpr uint32_t GEO_CLS_EDGE = 7u;   // something stepped over a cell edge (row kind HUB_GEO_CLS_EDGE)
+constexpr uint32_t GEO_CLS_GRP  = 8u;   // a moving group's tread (row kind HUB_GEO_CLS_GRP)
+constexpr uint32_t GEO_CLS_HNT  = 9u;   // a hunt is under way here (row kind HUB_GEO_CLS_HNT)
+constexpr uint32_t GEO_CLS_INT  = 10u;  // someone intends something here (row kind HUB_GEO_CLS_INT)
+constexpr uint32_t GEO_CLS_MTG  = 11u;  // two beings met here (row kind HUB_GEO_CLS_MTG)
+constexpr uint32_t GEO_CLS_NRG  = 12u;  // a body burns here (row kind HUB_GEO_CLS_NRG)
+constexpr uint32_t GEO_CLS_POOL = 13u;  // the gene pool was fed here (row kind HUB_GEO_CLS_POOL)
+constexpr uint32_t GEO_CLS_PRCP = 14u;  // it is raining here (row kind HUB_GEO_CLS_PRCP)
+constexpr uint32_t GEO_CLS_PRD  = 15u;  // a predation kill (row kind HUB_GEO_CLS_PRD)
+constexpr uint32_t GEO_CLS_PRES = 16u;  // an embodied actor stands here (row kind HUB_GEO_CLS_PRES)
+constexpr uint32_t GEO_CLS_TRL  = 17u;  // a lingering trace on the ground (row kind HUB_GEO_CLS_TRL)
 
-// ---------------------------------------------------------------------------
 // Report class row (World → Replica) - which class reported in which cell
-// ---------------------------------------------------------------------------
-// A cell row (frame 122) says WHERE something happened, never WHO reported it: the class tag a
-// producer raises on its report ends at the World. This row carries it on - ONE row per
+//
+// A cell row (frame 122) says WHERE something happened, never WHO reported it: the row kind a
+// producer files its place report under ends at the World. This row carries it on - ONE row per
 // (cell, class), keyed on the Replica by (proj_hash, cx, cz, cls_id) the way frame 133 keys an
 // actor, and joined in the browser against the SAME registry rows that translate the actor class.
-// The World reads the class tags in one view per tag and writes the code of the block above;
-// nobody on either side names a class.
+// ase-geoid finds each report over hub::mark_each by its shared mark HUB_GEO_FIN, codes the class
+// from the row kind with the block above and takes the mark off; nobody on either side names a
+// class.
 //
 // value is the GEO_POS_META of the LATEST report of this class in this cell - the size channel of
 // the three display channels (symbol = class, colour = sphere, size = value). Its meaning is the
@@ -624,7 +613,7 @@ constexpr uint32_t GEO_CLS_TRL  = 17u;  // a lingering trace on the ground (HubG
 // World → Replica on the existing binary WS lane, behind the same conn, region and rect gates as
 // frames 122, 130 and 133. 21 B, far under the 65536 lane fit; a re-send is an idempotent upsert.
 // There is deliberately NO retire word: a cell row does not retire when its marker decays either -
-// the trail stays in the Replica mirror until the lattice changes under it, and the class row
+// the trail stays in the Replica's cell rows until the lattice changes under it, and the class row
 // shares that life. The id continues the registry after 139 (134-139 are the reasoning memory lane).
 constexpr uint8_t BIN_MSG_GEOID_CLS_CELL = 140u; // World → Replica: one report class standing in one lattice cell (update on value or address change)
 
@@ -637,9 +626,8 @@ constexpr uint32_t CLS_CELL_OFF_CZ     = 9u;   // i32 offset of the cell chunk Z
 constexpr uint32_t CLS_CELL_OFF_CLS    = 13u;  // u32 offset of the class code (GEO_CLS_*)
 constexpr uint32_t CLS_CELL_OFF_VALUE  = 17u;  // f32 offset of the latest report's meta value
 
-// ---------------------------------------------------------------------------
 // Sphere numbers - the seven spheres of the world
-// ---------------------------------------------------------------------------
+//
 // One-based, zero means "no sphere". It is the SAME numbering as ase-gis (GIS_SPHERE_* in its
 // types.hpp): a registry row of the Replica and a layer row of the World meet in ONE palette in the
 // browser, and a colour follows its sphere, never its rank. The wire catalog compares both lists
@@ -654,9 +642,7 @@ constexpr uint32_t GEO_SPHERE_ANTHRO = 5u;  // society, craft and knowledge of b
 constexpr uint32_t GEO_SPHERE_MAGIA  = 6u;  // magic
 constexpr uint32_t GEO_SPHERE_SPIRI  = 7u;  // spirit and soul
 
-// ---------------------------------------------------------------------------
 // Region identity + geometry
-// ---------------------------------------------------------------------------
 constexpr uint32_t REGION_ID_NONE       = 0u;    // sentinel: no region (never a valid region_id)
 constexpr uint16_t WORLD_REGION_MAX     = 256u;  // max regions one World node may own at once
 constexpr uint16_t REGION_RECT_WIRE_SZ  = 20u;   // bytes one RegionRect occupies on the wire (u32 + 4x i32)
@@ -691,6 +677,90 @@ constexpr bool chunk_in_region(int32_t cx, int32_t cz,
     return cx >= cx0 && cx < cx1 && cz >= cz0 && cz < cz1;
 }
 
+// LITTLE-ENDIAN FIELD WRITERS - the byte form every frame of this contract states.
+//
+// Every offset in this header names a field that travels least significant byte first. The
+// writer that sets those bytes belongs to the same contract, not to one module: two modules that
+// spell the four shifts each keep two writers of one wire form, and a fix in one never reaches
+// the other. The writers compute bytes and nothing else - no registry, no state, no ECS type -
+// exactly like the codecs in hexgrid_wire.hpp. The rollup frames 46 and 47 of ase-rsn-quota and
+// ase-rsn-audit open with the same keyed head, [id][shard_key:u32][record_count:u16]; each module
+// keeps the offsets of its own frame and hands them in.
+
+/** Bits one byte of a wire field occupies. */
+constexpr uint32_t WIRE_BYTE_BITS = 8u;
+
+/** Mask of one byte of a wire field. */
+constexpr uint32_t WIRE_BYTE_MASK = 0xFFu;
+
+/**
+ * @brief Write a u16 field least significant byte first
+ * @param out Frame buffer
+ * @param at Offset of the field in the frame
+ * @param value Field value; only its low 16 bits travel
+ */
+inline void put_u16_le(char* out, uint32_t at, uint32_t value) {
+    out[at] = static_cast<char>(value & WIRE_BYTE_MASK);
+    out[at + 1u] = static_cast<char>((value >> WIRE_BYTE_BITS) & WIRE_BYTE_MASK);
+}
+
+/**
+ * @brief Write a u32 field least significant byte first
+ * @param out Frame buffer
+ * @param at Offset of the field in the frame
+ * @param value Field value
+ */
+inline void put_u32_le(char* out, uint32_t at, uint32_t value) {
+    out[at] = static_cast<char>(value & WIRE_BYTE_MASK);
+    out[at + 1u] = static_cast<char>((value >> WIRE_BYTE_BITS) & WIRE_BYTE_MASK);
+    out[at + 2u] = static_cast<char>((value >> (WIRE_BYTE_BITS * 2u)) & WIRE_BYTE_MASK);
+    out[at + 3u] = static_cast<char>((value >> (WIRE_BYTE_BITS * 3u)) & WIRE_BYTE_MASK);
+}
+
+/**
+ * @brief Write a u64 field least significant byte first, as two u32 halves
+ * @param out Frame buffer
+ * @param at Offset of the field in the frame
+ * @param value Field value; the low half goes first, at `at`, the high half at `at + 4`
+ */
+inline void put_u64_le(char* out, uint32_t at, uint64_t value) {
+    put_u32_le(out, at, static_cast<uint32_t>(value & 0xFFFFFFFFull));
+    put_u32_le(out, at + 4u, static_cast<uint32_t>(value >> (WIRE_BYTE_BITS * 4u)));
+}
+
+/**
+ * @brief Read a u32 field least significant byte first, the counterpart of put_u32_le
+ *
+ * Every byte passes through uint8_t before it is widened: a plain char is signed on this
+ * platform, and a byte of 0x80 or above would otherwise smear its sign over the upper bits.
+ *
+ * @param in Frame buffer, at least `at + 4` bytes long
+ * @param at Offset of the field in the frame
+ * @return Field value
+ */
+inline uint32_t get_u32_le(const char* in, uint32_t at) {
+    return static_cast<uint32_t>(static_cast<uint8_t>(in[at]))
+         | (static_cast<uint32_t>(static_cast<uint8_t>(in[at + 1u])) << WIRE_BYTE_BITS)
+         | (static_cast<uint32_t>(static_cast<uint8_t>(in[at + 2u])) << (WIRE_BYTE_BITS * 2u))
+         | (static_cast<uint32_t>(static_cast<uint8_t>(in[at + 3u])) << (WIRE_BYTE_BITS * 3u));
+}
+
+/**
+ * @brief Write the keyed head [id][key:u32][count:u16] a rollup frame opens with
+ * @param out Frame buffer
+ * @param frame_id BIN_MSG id of the frame, written at offset 0
+ * @param key_at Offset of the key field in this frame's layout
+ * @param key The key, for a rollup the shard key
+ * @param count_at Offset of the record count in this frame's layout
+ * @param count Number of records that follow the head
+ */
+inline void put_keyed_head(char* out, uint8_t frame_id, uint32_t key_at, uint32_t key,
+                           uint32_t count_at, uint32_t count) {
+    out[0] = static_cast<char>(frame_id);
+    put_u32_le(out, key_at, key);
+    put_u16_le(out, count_at, count);
+}
+
 /* DER GRUPPEN-DELTA-ZAEHLER STAND HIER ALS KOMPONENTE. ER IST JETZT EIN WERT.
  *
  * Es war `RegionGrpDltComponent` mit (region_id, grp_id, dlt_count, dlt_seen), eingefuehrt am
@@ -713,16 +783,14 @@ constexpr bool chunk_in_region(int32_t cx, int32_t cz,
  *
  * WAS AN SEINE STELLE TRAT: der Erzeuger fuehrt seinen EIGENEN Zaehler
  * (terrain::TerrainStaRgnDltComponent) und stellt ihn als WERT unter der Region als Besitzer fest;
- * der Verbraucher spiegelt ihn in seine EIGENE Zeile (world::WorldInpGrpDltComponent) und fuehrt
- * seinen EIGENEN Zaehlerstand. Die Gruppenachse steht im NAMEN des Schluessels - MOD_GRP_DLT_KEYS
- * oben -, genau wie MOD_GRP_LOAD_KEYS sie fuer den Lastvektor traegt. Was hier bleibt, ist die
- * Namenstabelle und die Halbierungsregel: Rechenvorschriften, keine ECS-Typen. */
+ * der Verbraucher liest ihn vom Stern in seine EIGENE Eingangszeile (world::WorldInpGrpDltComponent)
+ * und fuehrt seinen EIGENEN Zaehlerstand. Die Gruppenachse steht im NAMEN des Schluessels -
+ * MOD_GRP_DLT_KEYS oben -, genau wie MOD_GRP_LOAD_KEYS sie fuer den Lastvektor traegt. Was hier
+ * bleibt, ist die Namenstabelle und die Halbierungsregel: Rechenvorschriften, keine ECS-Typen. */
 
-// ---------------------------------------------------------------------------
 // ChunkSnapEntry - the full-fidelity per-chunk terrain slice (SNAP_PAGE payload).
 // Header 18 B, then four fixed grids; 5138 B per chunk in total. The SAME schema
 // serves the chunk persistence path, so there is exactly one encoder.
-// ---------------------------------------------------------------------------
 constexpr uint16_t SNAP_ENTRY_SCHEMA_VER      = 1u;     // bumped only by a contract change, never silently
 constexpr uint32_t CHUNK_SNAP_HDR_SZ          = 18u;    // schema_ver(2) + cx(4) + cz(4) + version(8)
 constexpr uint32_t CHUNK_SNAP_OFF_SCHEMA_VER  = 0u;     // u16 offset of the schema version
@@ -740,10 +808,8 @@ constexpr uint32_t CHUNK_SNAP_OFF_MOISTURE    = 3090u;  // 2066 + 1024
 constexpr uint32_t CHUNK_SNAP_OFF_FERTILITY   = 4114u;  // 3090 + 1024
 constexpr uint32_t CHUNK_SNAP_ENTRY_SZ        = 5138u;  // 18 + 2048 + 3*1024 - one chunk on the wire
 
-// ---------------------------------------------------------------------------
 // SNAP_PAGE(96) framing - lane-fit paging of the baseline transfer.
 // 11 entries * 5138 + 23 B header = 56541 B < 60000 < the 65536 lane buffer.
-// ---------------------------------------------------------------------------
 constexpr uint32_t SNAP_PAGE_MAX_BYTES     = 60000u;  // hard page ceiling kept below the lane buffer
 constexpr uint32_t SNAP_PAGE_HDR_SZ        = 23u;     // id(1) + handoff_id(8) + region_id(4) + page_idx(4) + page_total(4) + entry_count(2)
 constexpr uint32_t SNAP_PAGE_MAX_ENTRIES   = 11u;     // chunks per page at CHUNK_SNAP_ENTRY_SZ
@@ -763,8 +829,8 @@ constexpr uint32_t SNAP_PAGE_OFF_ENTRY_CNT = 21u;     // u16 offset of the entry
  *
  * MEASURED 2026-08-06 15:50:59: one observer appeared, 289 baseline pages went out in one burst,
  * the Replica's frame park (HOFF_PAGE_PARK_MAX = 256) overflowed and logged exactly 289 - 256 = 33
- * "frame park full ... dropped" warnings. The mirror indexed 0 chunks. Nothing on the sending side
- * noticed, because nothing on the sending side could.
+ * "frame park full ... dropped" warnings. The Replica's chunk index held 0 chunks. Nothing on the
+ * sending side noticed, because nothing on the sending side could.
  *
  * WHAT IT CARRIES. The identity of ONE refused chunk plus the reason - region, chunk address and
  * the version the sender believed it had delivered. The World rewinds that chunk's syn_ver below
@@ -829,11 +895,9 @@ constexpr uint8_t HOFF_ACK_ACTORS_READY = 3u;  // B instantiated EVERY resident 
 constexpr uint8_t HOFF_ACK_DRAINED      = 4u;  // A finished its ordered drain (actors destroyed, chunks unloaded)
 constexpr uint8_t HOFF_ACK_ERROR        = 5u;  // refusal (schema mismatch, OOM) - A aborts, keeps actors, zero loss
 
-// ---------------------------------------------------------------------------
 // PlayerSnap - the fixed actor layout carried by PLAYER_MIGRATE(100) and the
 // resident-actor pages of a region handoff. Sourced from the built player_st_*
 // components; player_epoch makes a late or duplicate migrate idempotent.
-// ---------------------------------------------------------------------------
 constexpr uint32_t PLAYER_SNAP_SZ            = 42u;  // total bytes of one PlayerSnap
 constexpr uint32_t PLAYER_SNAP_OFF_SCHEMA    = 0u;   // u16 schema version
 constexpr uint32_t PLAYER_SNAP_OFF_ID        = 2u;   // u32 player id
@@ -855,18 +919,17 @@ constexpr uint32_t PLAYER_MIGRATE_OFF_PROJ   = 5u;   // u32 offset of the owning
 constexpr uint32_t PLAYER_MIGRATE_OFF_REGION = 9u;   // u32 offset of the destination region (REGION_ID_NONE = the Replica resolves it from the snap position)
 constexpr uint32_t PLAYER_MIGRATE_FRAME_SZ   = PLAYER_MIGRATE_HDR_SZ + PLAYER_SNAP_SZ;  // 55 bytes: header(13) + PlayerSnap(42)
 
-// ---------------------------------------------------------------------------
 // EntitySnap - the type-generic TLV an entity's replicated components serialize
 // into, so migration never needs a runtime type switch: one codegen-generated
 // per-type emitter appends {type_id, len, bytes} to the entity's page.
 //
-// MIRROR CONDITIONS A1-A8 (CONTRACT AMENDMENT 2026-08-03, PLAN_ASE_COMPUTE_MOD_AXIS
+// INSTANTIATION CONDITIONS A1-A8 (CONTRACT AMENDMENT 2026-08-03, PLAN_ASE_COMPUTE_MOD_AXIS
 // T1 verdict "TRAGFAEHIG MIT-AUFLAGEN"): every process that instantiates entities
-// from these pages - the module-axis mirror of a partial handoff as much as the
+// from these pages - the receiving node of a partial module-axis handoff as much as the
 // full-region handoff - obeys ALL EIGHT, they are protocol discipline, not hints:
 //   A1  one allocator per number space: ONLY the owner process calls create();
-//       mirrors use create(hint) exclusively (EnTT hands indices out densely from
-//       0, two independent creators collide immediately)
+//       receiving processes use create(hint) exclusively (EnTT hands indices out densely
+//       from 0, two independent creators collide immediately)
 //   A2  CHECK the hint return: create(hint) != hint is a HARD error path
 //       (log::error + re-sync over SNAP_REQ(95)), never a silent continue -
 //       a live index makes EnTT return a DIFFERENT id without any error
@@ -884,7 +947,6 @@ constexpr uint32_t PLAYER_MIGRATE_FRAME_SZ   = PLAYER_MIGRATE_HDR_SZ + PLAYER_SN
 // The per-type emitters land with the ase-entity/ase-creature codegen systems
 // (PLAN_ASE_COMPUTE_PHASE_06_WORLD WS-H.4); PlayerSnap (frame 100) is the built
 // precedent and already travels logical ids + epoch, never raw EnTT ids.
-// ---------------------------------------------------------------------------
 constexpr uint32_t ENTITY_SNAP_HDR_SZ        = 12u;  // schema_ver(2) + entity_id(4) + entity_epoch(4) + component_count(2)
 constexpr uint32_t ENTITY_SNAP_OFF_SCHEMA    = 0u;   // u16 schema version
 constexpr uint32_t ENTITY_SNAP_OFF_ID        = 2u;   // u32 entity id
@@ -922,14 +984,14 @@ constexpr uint32_t ENTITY_SNAP_TLV_HDR_SZ    = 4u;   // per block: type_id(2) + 
  * WAS AN IHRE STELLE TRAT: eine typisierte Zustellung mit Zuhause in ase-hub - der MITTE des
  * Sterns, die BEIDE Tore sieht (gemessen 2026-08-14: Struktur-Validator 172 Dateien / 0 Verstoesse,
  * Paritaet Phase A generiert, 90 Components entschieden). Hier in Layer 0 greift KEINES der beiden.
- * `hub::HubCapXmitReqComponent` traegt die Bewegung,
- * `hub::HubCapSpwnReqComponent` die Nutzlast, und sechs Klassen-Tags `hub::HubCapReqSplt/Mrge/
- * Blnc/Spwn/Asgn/RetrTag` sagen, welche Klasse es ist - die Klasse bleibt ein TAG und wird nie ein
- * Zahlenfeld. Das Plugin nimmt sie ueber sechs SDK-Aufrufe `sdk::take_capacity_*_request()`, die
- * die Zeile kopieren und im selben Schritt entfernen, und legt sie auf EIGENE Zeilen
+ * Die Zustellung ist eine Zeile der Art HUB_CAP_XMIT_REQ (modules/ase-hub/data/hub_rows.json):
+ * Bewegung und Nutzlast stehen als Felder der Zeile, und eine der sechs Klassenmarken
+ * HUB_CAP_REQ_SPLT/MRGE/BLNC/SPWN/ASGN/RETR sagt, welche Klasse es ist - die Klasse bleibt eine
+ * MARKE und wird nie ein Zahlenfeld. Das Plugin nimmt sie mit CapacityOrchXmitRcvSystem ueber die
+ * Zeilen-Bausteine des SDK, gibt die Zeile im selben Schritt frei und legt sie auf EIGENE Zeilen
  * (`CapacityOrchInpXmitComponent`, `CapacityOrchReqSpwnComponent`, eigene Klassen-Tags). Es
- * inkludiert dabei weder ase/capacity noch ase/hub. Praezedenzfall im Bestand:
- * HubCapNodeAdopComponent samt modules/ase-sdk/src/api/sdk_capacity_adopt.cpp.
+ * inkludiert dabei weder ase/capacity noch ase/hub. Dieselbe Form traegt die Knotenzustellung
+ * HUB_CAP_NODE_ADOP, die CapacityOrchHubAdopSyncSystem nimmt.
  *
  * WAS HIER BLEIBT: `RegionRect` - ein echter Draht-POD, den World und Replica auf Frame 93 teilen,
  * und der auf der Zustellung nur mitfaehrt. */
@@ -957,7 +1019,8 @@ constexpr uint32_t ENTITY_SNAP_TLV_HDR_SZ    = 4u;   // per block: type_id(2) + 
  * Regel nahm sie zurueck, und sie mussten von Hand gestoppt werden.
  *
  * BEIDE BEGRUENDUNGEN, WARUM SIE EIGENE KLASSEN SIND, GELTEN WEITER und stehen jetzt bei den Tags,
- * die sie ersetzt haben: `hub::HubCapReqAsgnTag` und `hub::HubCapReqRetrTag`. Was NICHT weiter
+ * die sie ersetzt haben: den Klassenmarken HUB_CAP_REQ_ASGN und HUB_CAP_REQ_RETR der Zeilenart
+ * HUB_CAP_XMIT_REQ (hub_rows.json). Was NICHT weiter
  * galt, war ihr Zuhause - siehe den Befund ueber `CapacityReqXmitComponent` oben: Modul und Plugin
  * teilen EINEN Prozess und EINE Registry, die geteilte Zeile war nie eine Tier-Naht, und in dieser
  * Schicht lesen Paritaet und Struktur-Validator gleichzeitig leer.
@@ -1034,14 +1097,14 @@ constexpr uint32_t ENTITY_SNAP_TLV_HDR_SZ    = 4u;   // per block: type_id(2) + 
  * Genau DIESE Zeichenkette ist der Grund, warum die Region-Intents nicht als Hub-WERTE gefahren
  * werden koennen (voller Befund oben bei `CapacityReqXmitComponent`): float32 traegt keinen Namen.
  *
- * SIE LIEGT JETZT AUF DER ZUSTELLUNG, nicht mehr im Fundament: `hub::HubCapSpwnReqComponent` neben
- * `hub::HubCapXmitReqComponent`. proj_hash faellt dabei weg - er stand auf beiden Zeilen und war
- * damit zwei Antworten auf eine Frage; die Bewegungszeile fuehrt ihn.
+ * SIE LIEGT JETZT AUF DER ZUSTELLUNG, nicht mehr im Fundament: als Felder der Zeile HUB_CAP_XMIT_REQ
+ * neben der Bewegung. proj_hash steht dort einmal, als Feld der Bewegung - eine Frage, eine
+ * Antwort.
  *
  * NODE_TOKEN_PROJ_ID_SZ bleibt hier: die Breite ist eine Draht-Tatsache der Frames 93/101/102 und
  * gilt fuer beide Seiten der Tier-Naht - anders als die Zeile, die sie benutzte. */
 
-/* DER PENDING-MARKER STAND HIER ALS KOMPONENTE. ER WAR REINE REDUNDANZ.
+/* DER PENDING-MARKER STAND HIER ALS KOMPONENTE. ER TRUG NICHTS EIGENES.
  *
  * Es war `CapacityNodePendComponent{node_id, proj_hash}`: das Orchestrator-Plugin (L4) legte ihn
  * beim Reservieren an und entfernte ihn, sobald der Knoten lief - auf DERSELBEN Entity, die schon
@@ -1096,11 +1159,12 @@ constexpr uint32_t ENTITY_SNAP_TLV_HDR_SZ    = 4u;   // per block: type_id(2) + 
  * selbstgebauter String-Ersatzkanal am Hub gewesen - ausdruecklich verboten -, und
  * `set_debug_label` ist ein Debug-Werkzeug und nie ein Produktivpfad.
  *
- * DER SANKTIONIERTE WEG WAR SCHON GEBAUT: eine TYPISIERTE Request-Zeile, deren Zuhause ase-hub ist,
- * abgeholt ueber die SDK-Grenze. Sie heisst jetzt `hub::HubCapNodeAdopComponent` samt
- * `hub::HubCapAdopPendTag`, und `sdk::take_capacity_node_adoption()` gibt sie heraus. Praezedenz
- * im Bestand: HubStgWflwReqComponent mit modules/ase-sdk/src/api/sdk_workflow.cpp, das denselben
- * Satz im Kopfkommentar traegt - nur mit vertauschten Enden.
+ * DER SANKTIONIERTE WEG IST EINE ZEILE DES STERNS, deren Zuhause ase-hub ist, abgeholt ueber die
+ * SDK-Grenze: die Zeilenart HUB_CAP_NODE_ADOP mit der Marke HUB_CAP_ADOP_PEND (hub_rows.json), und
+ * CapacityOrchHubAdopSyncSystem nimmt sie ueber die Zeilen-Bausteine des SDK. Das Plugin bietet
+ * seine eigenen Knoten in derselben Form als HUB_CAP_NODE_OFFR an. Praezedenz im Bestand ist die
+ * Zeilenart HUB_STG_WFLW_REQ - dieselbe Form mit vertauschten Enden: dort schreibt das Plugin
+ * ase-pl-edge-webserver, und das Modul ase-storage liest.
  *
  * WARUM ase-hub UND NICHT HIER. Layer 0 ist als frei von ECS definiert und traegt keine
  * `codegen.json`; was hier liegt, erreicht becsy nie und ist zugleich fuer den Struktur-Validator
@@ -1134,7 +1198,7 @@ constexpr uint32_t ENTITY_SNAP_TLV_HDR_SZ    = 4u;   // per block: type_id(2) + 
  * ledger that points at nobody.
  *
  * The rect rides beside it in the RegionRect POD above, on the same delivery entity: rect geometry
- * has one shape in this codebase and a second copy of the four edges would be a second truth.
+ * has one shape in this codebase, and its four edges stand once.
  */
 /* DIE ZUSTELLZEILE STAND HIER. SIE IST JETZT EINE EINZIGE TATSACHE.
  *
@@ -1149,8 +1213,8 @@ constexpr uint32_t ENTITY_SNAP_TLV_HDR_SZ    = 4u;   // per block: type_id(2) + 
  * CAP_RGN_CX0/CZ0/CX1/CZ1 -, und der Scheduler liest sie in seinem Ingest ohnehin selbst
  * (CapacityRgnIgstSystem liest sie in seinem Ingest-Gang), bevor er irgendetwas weitergibt. Dem Verbraucher fehlte
  * allein, WELCHE Region zugestellt wird; den Rest liest er unter diesem Besitzer selbst. Also
- * CAP_RGN_ADOP_RGN unter GLOBAL, eine Zustellung je Durchgang - und keine zweite Kopie des Rects,
- * die eine zweite Wahrheit ueber dieselbe Region waere.
+ * CAP_RGN_ADOP_RGN unter GLOBAL, eine Zustellung je Durchgang - und das Rect steht weiter nur unter
+ * der Region als Besitzer.
  *
  * Die Zustellung ist weiterhin eine BEHAUPTUNG ueber die Vergangenheit, keine ueber die Gegenwart:
  * sie sagt, dass diese Region von diesem Knoten bedient WURDE. Ob es den Knoten noch gibt, ist die
