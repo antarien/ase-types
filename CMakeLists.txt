@@ -10,7 +10,7 @@ ASE FOUNDATION BUILD CONFIGURATION
 
 @module      ase-types
 @layer       0 (Foundation)
-@usecase     usecase:100013 - build one tier
+@usecase     usecase:100051 - resolve module dependencies
 @created     2025-12-15
 @modified    2026-10-16
 @version     00.00.27.00027 [init]
