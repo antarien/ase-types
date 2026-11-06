@@ -34,8 +34,8 @@
  * @category    network/message
  * @usecase     usecase:100023 - replicate world state
  * @created     2026-07-28
- * @modified    2026-10-19
- * @version     2.2.0
+ * @modified    2026-11-04
+ * @version     2.3.0
  *
  * ECS TYPES COMPLIANCE
  *
@@ -517,6 +517,33 @@ constexpr float LATTICE_HEAD_SEMI_MIN_M = 1.0f;  // smallest radius that still d
 // this bound is a corrupt frame, not an exotic planet - the decoder drops it instead of storing a
 // contract that cannot be drawn.
 constexpr float LATTICE_HEAD_FLAT_MAX = 0.999f;  // highest flattening a contract row may carry
+
+// Layer registry row (World → Replica) - one row of the GIS layer registry, stamped with the
+// lattice it was drawn against.
+//
+// The registry rows of ase-gis describe every map layer: its sphere, its base resolution, how it
+// interpolates and propagates, its value band and its dynamics. They are drawn on the honeycomb
+// whose contract frame 129 carries, so each row travels with the address level of that contract.
+// The Replica keeps a row only when this level equals the level it took from frame 129; a
+// differing level is a contract break and the row is dropped. Like 129 the rows are planet-wide:
+// no project and no region field rides this frame.
+//
+// Frame-175 layout:
+// [175][level:u32][layer_type_id:u32][sphere_id:u8][base_resolution:u8][interpolation:u8]
+// [propagation:u8][default:f32][min:f32][max:f32][decay:f32][propagation_rate:f32] = 33 B.
+constexpr uint8_t  BIN_MSG_GIS_REG_ROW        = 175u; // World → Replica: one row of the GIS layer registry, stamped with the lattice level
+constexpr uint32_t REG_ROW_FRAME_SZ           = 33u;  // [175](1) + level(4) + type(4) + 4 x u8(4) + 5 x f32(20)
+constexpr uint32_t REG_ROW_OFF_LEVEL          = 1u;   // u32 offset of the address level the row was drawn against
+constexpr uint32_t REG_ROW_OFF_TYPE           = 5u;   // u32 offset of the layer type id, the key of the row
+constexpr uint32_t REG_ROW_OFF_SPHERE         = 9u;   // u8 offset of the sphere the layer belongs to
+constexpr uint32_t REG_ROW_OFF_BASE_RES       = 10u;  // u8 offset of the base resolution of the layer
+constexpr uint32_t REG_ROW_OFF_INTERP         = 11u;  // u8 offset of the interpolation mode
+constexpr uint32_t REG_ROW_OFF_PROPAGATION    = 12u;  // u8 offset of the propagation mode
+constexpr uint32_t REG_ROW_OFF_DEFAULT        = 13u;  // f32 offset of the default value of a cell
+constexpr uint32_t REG_ROW_OFF_MIN            = 17u;  // f32 offset of the lowest value a cell may hold
+constexpr uint32_t REG_ROW_OFF_MAX            = 21u;  // f32 offset of the highest value a cell may hold
+constexpr uint32_t REG_ROW_OFF_DECAY          = 25u;  // f32 offset of the decay rate per second
+constexpr uint32_t REG_ROW_OFF_PROPAGATION_RT = 29u;  // f32 offset of the propagation rate per second
 
 // Actor cell row (World → Replica) - the moving carrier mark of the geoid tab
 //

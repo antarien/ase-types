@@ -1,7 +1,5 @@
 /**
- * =============================================================================
  * ASE TYPES - Hex Lattice Wire Unit Tests
- * =============================================================================
  *
  * @file        hexgrid_wire_test.cpp
  * @brief       Address cases of the widened lattice form, over all twenty faces.
@@ -14,23 +12,20 @@
  *              Every case walks the public surface of hexgrid_wire.hpp only. Layer 0 carries no
  *              dependency, so the two outside facts this file needs - the lattice address stride
  *              and the old 20-bit layout - are restated here as named constants with the file
- *              and line they come from. A divergence between a restatement and its source is
- *              exactly the drift these cases exist to catch.
+ *              they come from. Case 4 holds the restated layout against chunk_coords_to_id, so a
+ *              divergence between the restatement and its source fails a case.
  *
  *              The doctest main is switched on from tests/CMakeLists.txt rather than from a
  *              define here, so this file carries no macro definition of its own.
  *
- * -----------------------------------------------------------------------------
- * META
- * -----------------------------------------------------------------------------
  * @module      ase-types
  * @layer       0 (Foundation)
  * @category    structure/reference/identifier
+ * @usecase     usecase:101396 - assure engine component quality
+ * @actor       Engine Unit Test (ENGUTEST)
  * @created     2026-08-08
- * @modified    2026-08-25
- * @version     1.0.0
- *
- * =============================================================================
+ * @modified    2026-11-05
+ * @version     1.0.1
  */
 
 #include <doctest/doctest.h>
@@ -44,23 +39,21 @@ using namespace ase::types;
 namespace {
 
 constexpr int32_t FACE_COUNT = 20;              // icosahedron faces the lattice address spans
-// NAMES CORRECTED 2026-08-23: the three lines below cited HEXGRID_FACE_STRIDE and
-// HEXGRID_ADDRESS_FREQUENCY "in ase-math/hexgrid.hpp" at :191/:184/:189. Measured: that header
-// declares neither constant (its only HEXGRID_* is HEXGRID_FLATTENING_MAX), and the three
-// addresses land on `*/`, a geodetic line and `theta`. The names live in PROSE only, in the
-// lattice-address paragraph of hexgrid_wire.hpp; the VALUES are defined right here and nowhere
-// else. Kept as literals with their derivation spelled out, which is what a test needs.
+// The names FACE_STRIDE and ADDRESS_FREQUENCY appear in prose only, in the lattice-address
+// paragraph of hexgrid_wire.hpp; ase-math/hexgrid.hpp declares neither (its only HEXGRID_* is
+// HEXGRID_FLATTENING_MAX). The VALUES are defined right here and nowhere else, kept as literals
+// with their derivation spelled out, which is what a test needs.
 constexpr int32_t FACE_STRIDE = 524288;         // stride between two icosahedron faces
 constexpr int32_t ADDRESS_FREQUENCY = 262144;   // address frequency inside one face
 constexpr int32_t MAX_CX = 10223616;            // 19 * FACE_STRIDE + ADDRESS_FREQUENCY
 constexpr int32_t ALIAS_PERIOD = 1048576;       // 2 * FACE_STRIDE, the window of the old packing
-constexpr int32_t ALIAS_OF_MAX_CX = 786432;     // FACE_STRIDE + ADDRESS_FREQUENCY, old twin of MAX_CX
+constexpr int32_t ALIAS_OF_MAX_CX = 786432;     // FACE_STRIDE + ADDRESS_FREQUENCY, collided with MAX_CX
 constexpr int32_t INNER_SEAT_I = 1000;          // inner seat of a face, all three weights non-zero
 constexpr int32_t INNER_SEAT_J = 1000;          // inner seat of a face, never a pentagon corner
 constexpr int32_t SECOND_SEAT_I = 12345;        // second inner seat, unrelated to the first
 constexpr int32_t SECOND_SEAT_J = 6789;         // second inner seat, unrelated to the first
 constexpr int32_t LIVE_BIG_CX = 5332818;        // measured live in test_replication_cap_node.cpp
-constexpr int32_t LIVE_ALIAS_CX = 4284242;      // LIVE_BIG_CX minus ALIAS_PERIOD, its old twin
+constexpr int32_t LIVE_ALIAS_CX = 4284242;      // LIVE_BIG_CX minus ALIAS_PERIOD, collided with it
 constexpr int32_t LIVE_CZ = -40;                // the negative cz that pair was measured at
 constexpr int32_t OLD_LAYOUT_BITS = 20;         // bits per axis of the 3D form
 constexpr int32_t HEIGHT_SLICE_LOW = -8;        // lowest vertical slice the height case walks
@@ -76,8 +69,8 @@ constexpr uint32_t SWEEP_COUNT = 400u;          // FACE_COUNT times SAMPLE_I_COU
  * The terrain chunk id packing, restated here as the REFERENCE of the 3D identity case and as the
  * OLD rule of the collision case. Layer 0 must not include Layer 3 and neither may this test, so
  * the reference is the frozen bit layout itself (20 bits per axis, centre offset 1 << 19,
- * x | y<<20 | z<<40) written out once - mirrored from
- * CHUNK_BITS and CHUNK_OFFSET in modules/ase-terrain/include/ase/terrain/types.hpp.
+ * x | y<<20 | z<<40) written out once. Its live definition is CHUNK_BITS and CHUNK_OFFSET in
+ * modules/ase-terrain/include/ase/terrain/types.hpp, and case 4 reads chunk_coords_to_id against it.
  */
 uint64_t terrain_reference_pack(int32_t cx, int32_t cy, int32_t cz) {
     const uint32_t bits = static_cast<uint32_t>(OLD_LAYOUT_BITS);
@@ -91,10 +84,7 @@ uint64_t terrain_reference_pack(int32_t cx, int32_t cy, int32_t cz) {
 
 }  // namespace
 
-// =============================================================================
-// CASE 1 - the pairs that shared one key under the 20-bit packing are distinct
-// =============================================================================
-
+// Case 1: the pairs that shared one key under the 20-bit packing are distinct.
 TEST_CASE("Lattice address: cells that aliased under the 20-bit packing carry distinct ids") {
     /**
      * Each pair is stated with its OLD key as well as its new one. Asserting only the new
@@ -135,18 +125,12 @@ TEST_CASE("Lattice address: cells that aliased under the 20-bit packing carry di
     CHECK(cell_to_chunk_id(LIVE_BIG_CX, LIVE_CZ) != cell_to_chunk_id(LIVE_ALIAS_CX, LIVE_CZ));
 }
 
-// =============================================================================
-// CASE 2 - the round trip is the identity over all twenty faces
-// =============================================================================
-
+// Case 2: the round trip is the identity over all twenty faces.
 TEST_CASE("Lattice address: the cell id round trip is the identity on every face") {
     /**
      * The seats are INNER seats. (i=0, j=0) is an icosahedron corner, a pentagon that the marker
-     * path rejects productively. NAME CORRECTED 2026-08-23: this cited
-     * `gis_hxgn_mrkr_sys.cpp:274`, a file that no longer exists anywhere in the tree — the
-     * HXGN_MRKR constants live in ase-gis/types.hpp and no marker system of that name remains.
-     * A proof carried on a corner would be a
-     * proof about a cell that never exists.
+     * path rejects productively; the HXGN_MRKR constants of that path live in ase-gis/types.hpp.
+     * A proof carried on a corner would be a proof about a cell that never exists.
      */
     const int32_t seat_i[SEAT_COUNT] = {INNER_SEAT_I, SECOND_SEAT_I};
     const int32_t seat_j[SEAT_COUNT] = {INNER_SEAT_J, SECOND_SEAT_J};
@@ -174,10 +158,7 @@ TEST_CASE("Lattice address: the cell id round trip is the identity on every face
     CHECK(chunk_id_to_cell_z(extreme) == INT32_MAX);
 }
 
-// =============================================================================
-// CASE 3 - the declared lattice range maps injectively
-// =============================================================================
-
+// Case 3: the declared lattice range maps injectively.
 TEST_CASE("Lattice address: the declared cx and cz range produces no two equal cell ids") {
     /**
      * The sweep spans the range the DoD names: cx from 0 to MAX_CX across all twenty faces, cz
@@ -216,10 +197,7 @@ TEST_CASE("Lattice address: the declared cx and cz range produces no two equal c
     CHECK(duplicates == 0u);
 }
 
-// =============================================================================
-// CASE 4 - the 3D form is untouched and its height axis still carries
-// =============================================================================
-
+// Case 4: the 3D form is untouched and its height axis still carries.
 TEST_CASE("Lattice address: the 3D packing is unchanged and the vertical axis still separates") {
     // Identity with the terrain reference, the case the contract froze - unchanged for the 3D form.
     CHECK(chunk_coords_to_id(0, 0, 0) == terrain_reference_pack(0, 0, 0));
