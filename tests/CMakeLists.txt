@@ -1,3 +1,9 @@
+#[[
+Copyright (c) Jan Ohlmann. All rights reserved.
+Licensed to ANTARES SIMULACAO LTDA. Use is governed by LICENSE.md and PJV.md in this repository.
+SPDX-License-Identifier: LicenseRef-ASE-LIC
+]]
+
 add_executable(ase-types-test
     hexgrid_wire_test.cpp
 )

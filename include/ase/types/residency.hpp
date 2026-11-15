@@ -35,7 +35,11 @@
  * @category    state
  * @created     2026-08-26
  * @modified    2026-08-26
- * @version     1.0.0
+ * @version     00.00.29.00029 [init]
+ *
+ * Copyright (c) Jan Ohlmann. All rights reserved.
+ * Licensed to ANTARES SIMULACAO LTDA. Use is governed by LICENSE.md and PJV.md in this repository.
+ * SPDX-License-Identifier: LicenseRef-ASE-LIC
  *
  * ECS COMPONENT COMPLIANCE (L0 seam POD, ridden by entities like types::RegionRect)
  *

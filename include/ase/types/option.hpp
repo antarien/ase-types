@@ -25,7 +25,11 @@
  * @category    error/result/optional
  * @created     2025-12-15
  * @modified    2026-08-20
- * @version     1.1.0
+ * @version     00.00.29.00029 [init]
+ *
+ * Copyright (c) Jan Ohlmann. All rights reserved.
+ * Licensed to ANTARES SIMULACAO LTDA. Use is governed by LICENSE.md and PJV.md in this repository.
+ * SPDX-License-Identifier: LicenseRef-ASE-LIC
  */
 
 #include <stdexcept>

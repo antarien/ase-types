@@ -37,7 +37,11 @@
  * @usecase     usecase:5754 - map geo information
  * @created     2026-08-06
  * @modified    2026-10-18
- * @version     1.2.1
+ * @version     00.00.29.00029 [init]
+ *
+ * Copyright (c) Jan Ohlmann. All rights reserved.
+ * Licensed to ANTARES SIMULACAO LTDA. Use is governed by LICENSE.md and PJV.md in this repository.
+ * SPDX-License-Identifier: LicenseRef-ASE-LIC
  *
  * DRY / SOLID / SSOT COMPLIANCE:
  * - NO ECS: no registry, no EnTT, no component behaviour in this header

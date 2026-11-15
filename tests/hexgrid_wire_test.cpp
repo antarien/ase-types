@@ -25,7 +25,11 @@
  * @actor       Engine Unit Test (ENGUTEST)
  * @created     2026-08-08
  * @modified    2026-11-05
- * @version     1.0.1
+ * @version     00.00.29.00029 [init]
+ *
+ * Copyright (c) Jan Ohlmann. All rights reserved.
+ * Licensed to ANTARES SIMULACAO LTDA. Use is governed by LICENSE.md and PJV.md in this repository.
+ * SPDX-License-Identifier: LicenseRef-ASE-LIC
  */
 
 #include <doctest/doctest.h>

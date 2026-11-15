@@ -35,7 +35,11 @@
  * @usecase     usecase:100023 - replicate world state
  * @created     2026-07-28
  * @modified    2026-11-04
- * @version     2.3.0
+ * @version     00.00.29.00029 [init]
+ *
+ * Copyright (c) Jan Ohlmann. All rights reserved.
+ * Licensed to ANTARES SIMULACAO LTDA. Use is governed by LICENSE.md and PJV.md in this repository.
+ * SPDX-License-Identifier: LicenseRef-ASE-LIC
  *
  * ECS TYPES COMPLIANCE
  *
