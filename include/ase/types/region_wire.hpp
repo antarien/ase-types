@@ -197,7 +197,7 @@ constexpr uint32_t CELL_STATE_MARK       = 1u;   // wire code: cell walked and s
 // the migration note there - THIS anchor only pins the ids so no later band reuses them.
 // The module axis (MODSET/HOFF_MODSET) therefore starts at 125 below.
 
-// Module-group registry - the module axis of the dynamic server meshing.
+// Module-group registry - the module axis of the dynamic region partitioning.
 // CONTRACT AMENDMENT 2026-08-03 (PLAN_ASE_COMPUTE_MOD_AXIS.md T4, decision E4
 // option I-B): the ASSIGNMENT UNIT of the module axis is the causality GROUP,
 // never the single module - a per-module `if (module == ...)` dispatch is the

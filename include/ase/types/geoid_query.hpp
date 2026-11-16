@@ -4,7 +4,7 @@
  * ASE Layer 0 POD - Lattice Query Seam
  *
  * @file        geoid_query.hpp
- * @brief       The address rule of the lattice - a buffer capacity and an owner fold, no ECS
+ * @brief       The address rule of the lattice - an owner fold, no ECS
  * @description `modules/ase-geoid` owns the planetary hexagon lattice, and other Layer 3 modules
  *              need its answers. A Layer 3 module must never include another Layer 3 module
  *              (WRFL_ASE_MODULE_DEPENDENCIES.md, Section 3), and a Hub key cannot carry a cell
@@ -15,14 +15,16 @@
  *              two Layer 3 modules of the same tier - the seven question and answer PODs that
  *              tried are documented below, and they fell away with the module boundary that made
  *              them necessary. It cannot carry the NAME OF A CLASS either: an empty tag IS an ECS
- *              component, and a class belongs to the module that owns it (note below). What it CAN
- *              carry is a rule for computing a number - `geoid_poi_owner` folds (project, ordinal)
- *              into a Hub owner, and that fold crosses a real TIER boundary: the World writes
- *              GEO_POIS_CX/CZ under it (geoid_pois_pub_sys.cpp) and the Replica reads them back
- *              (replica_cap_resp_sys.cpp). Two processes, two registries, no shared Hub - which is
- *              exactly what Layer 0 exists for.
+ *              component, and a class belongs to the module that owns it (note below). It cannot
+ *              carry a CONTRACT VALUE of the lattice: the ring length of an answer is the hub
+ *              constant GEO_CONST_MAX_NEIGHBORS. What it CAN carry is a rule for computing a
+ *              number - `geoid_poi_owner` folds (project, ordinal) into a Hub owner, and that fold
+ *              crosses a real TIER boundary: the World writes GEO_POIS_CX/CZ under it
+ *              (geoid_pois_pub_sys.cpp) and the Replica reads them back (replica_cap_resp_sys.cpp).
+ *              Two processes, two registries, no shared Hub - which is exactly what Layer 0 exists
+ *              for.
  *
- *              NO ECS HERE. What remains is a constant and a fold - no registry, no EnTT, no
+ *              NO ECS HERE. What remains is the mixing word and the fold - no registry, no EnTT, no
  *              component, no tag, no behaviour. Layer 0 stays ECS free.
  *
  *              THE ADDRESS IS THE CHUNK ADDRESS. (cx,cz) as int32 is the cell address of Master
@@ -36,7 +38,7 @@
  * @category    structure/reference/identifier
  * @usecase     usecase:5754 - map geo information
  * @created     2026-08-06
- * @modified    2026-10-18
+ * @modified    2026-11-16
  * @version     00.00.29.00029 [init]
  *
  * Copyright (c) Jan Ohlmann. All rights reserved.
@@ -52,33 +54,6 @@
 #include <cstdint>
 
 namespace ase::types {
-
-/**
- * MEMORY CONTRACT OF THE ANSWER - not the parameters of the lattice
- *
- * Was hier steht, ist die groesste Ringlaenge, die eine Antwort je tragen kann. Ein Verbraucher
- * legt daraus einen Puffer an und iteriert die GEMELDETE Zahl (`ngbr_count`), nie diese hier. Das
- * ist eine Kapazitaet zur Uebersetzungszeit - ein Array laesst sich nicht aus einem Laufzeitwert
- * dimensionieren - und keine Aussage darueber, wie viele Nachbarn eine Zelle wirklich hat.
- *
- * MIGRATED 2026-08-06 (WRFL_ASE_CONSTANTS.md): vier Werte standen hier zusaetzlich und waren
- * PARAMETER der Konstruktion, keine Vertragsgroessen. Ein Parameter, den beide Seiten kennen
- * muessen, reist als Datum ueber den Hub, statt in zwei Schichten einkompiliert zu werden:
- *
- * ┌──────────────────────────────┬───────────────────────────────┬───────────────────────────────┐
- * │ war hier                     │ ist jetzt Hub-Schluessel      │ Befund bei der Ablesung        │
- * ├──────────────────────────────┼───────────────────────────────┼───────────────────────────────┤
- * │ GEOID_ADDRESS_FREQUENCY      │ GEO_CONST_ADDRESS_FREQUENCY   │ 0 Verbraucher ausserhalb      │
- * │ GEOID_ADDRESS_FACE_STRIDE    │ GEO_CONST_ADDRESS_FACE_STRIDE │ 0 Verbraucher ausserhalb      │
- * │ GEOID_ADDRESS_LEVEL_MAX      │ GEO_CONST_ADDRESS_BITS        │ Erzeuger der Vertragszeile    │
- * │ GEOID_PENTAGON_NEIGHBORS     │ GEO_CONST_PENTAGON_NEIGHBORS  │ semantischer Vergleich        │
- * └──────────────────────────────┴───────────────────────────────┴───────────────────────────────┘
- *
- * Die Werte selbst stehen in modules/ase-hub/data/hub_constants.json. Wer sie braucht, liest sie
- * dort und legt sie auf eine Eingangskomponente; ein TypeScript-Client kann den Hub nicht lesen,
- * deshalb endet jede Kette in einer Komponente, die beide Seiten gleich sehen.
- */
-constexpr uint32_t GEOID_MAX_NEIGHBORS = 6;       // Ring buffer capacity of ONE answer
 
 /**
  * DIE SIEBEN FRAGE- UND ANTWORT-PODS STANDEN HIER. SIE SIND ERSATZLOS ENTFALLEN.
@@ -101,8 +76,11 @@ constexpr uint32_t GEOID_MAX_NEIGHBORS = 6;       // Ring buffer capacity of ONE
  * Entity. Die zwei Adapter, die zwischen PODs und Modulkomponenten uebersetzten
  * (GeoidCellAskSystem, GeoidCellAnsSystem), sind mit den PODs verschwunden.
  *
- * WAS BLEIBT, ist die Konstante oben. Sie ist kein Naht-Bestandteil, sondern eine Puffer-Kapazitaet
- * zur Uebersetzungszeit - ein Array laesst sich nicht aus einem Laufzeitwert dimensionieren.
+ * DIE RINGLAENGE EINER ANTWORT STEHT NICHT IN LAYER 0. Die Nachbarzahl ist ein Vertragswert des
+ * Gitters und reist ueber den Hub: GeoidHubCnstSyncSystem liest GEO_CONST_MAX_NEIGHBORS und legt
+ * ihn auf GeoidInpAddrComponent.max_neighbors, die Schranke, ueber die jeder Ringverbraucher
+ * iteriert. Den Puffer, in dem der Weber den Ring der Zelle in der Hand fuehrt, dimensioniert das
+ * Gitter selbst (GEOID_RING_BUFFER_SLOTS in modules/ase-geoid/include/ase/geoid/types.hpp).
  */
 
 /**
